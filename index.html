@@ -398,6 +398,8 @@ function failReason(detail) {
   if (/method for benefitPay/i.test(e)) return 'BenefitPay is not switched on in MyFatoorah';
   if (/method for debit/i.test(e)) return 'Debit card (Benefit) is not switched on in MyFatoorah';
   if (/within an hour/i.test(e)) return 'Not paid within an hour';
+  if (/closed the payment page/i.test(e)) return 'Left the payment page without paying';
+  if (/paid again as order/i.test(e)) return 'Paid again as a new order';
   if (/no myfatoorah invoice/i.test(e)) return 'The payment page never opened';
   if (detail?.invoice_status === 'Canceled') return 'Cancelled on the payment page';
   if (e) return 'Payment page error';
