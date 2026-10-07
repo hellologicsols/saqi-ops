@@ -35,6 +35,7 @@
   a { color: var(--accent); }
   svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   [hidden] { display: none !important; }
+  .phone-only { display: none !important; }
 
   /* Shell: sidebar on wide screens, pills on phones. */
   .shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
@@ -109,7 +110,7 @@
   .kpi .v { font-size: 26px; font-weight: 750; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi .v small { font-size: 14px; font-weight: 600; color: var(--sub); margin-right: 3px; }
   .kpi .l { font-size: 13px; font-weight: 600; color: var(--sub); }
-  .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 14px; overflow: hidden; }
+  .pipeline { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 14px; overflow: hidden; }
   .stage { padding: 14px 16px; border-left: 1px solid var(--line); cursor: pointer; background: none; border-top: 0; border-right: 0; border-bottom: 0;
            font: inherit; color: inherit; text-align: left; position: relative; }
   .stage:first-child { border-left: 0; }
@@ -171,7 +172,7 @@
 
   /* Delivery cards */
   .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
-  .ocard { padding: 16px; display: grid; gap: 6px; }
+  .ocard { padding: 16px; display: grid; gap: 6px; align-content: start; }
   .ocard .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .ocard .num { font-weight: 750; font-size: 16px; cursor: pointer; }
   .ocard .mosque { font-weight: 600; }
@@ -181,6 +182,25 @@
   .box { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
   .photos { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .photos img { width: 88px; height: 88px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
+
+  /* Deliveries board */
+  .toolbar { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+  .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .col { background: var(--chip); border-radius: 16px; padding: 10px; display: grid; gap: 10px; }
+  .col > header { display: flex; align-items: center; gap: 8px; font-weight: 700; padding: 4px 6px; }
+  .col > header .n { margin-left: auto; font-size: 12px; background: var(--card); border-radius: 999px; padding: 1px 9px; color: var(--sub); }
+  .col .dayhead { background: none; border: 0; padding: 4px 6px 0; }
+  .col .empty { padding: 18px 8px; font-size: 14px; }
+  .dcard { padding: 12px 14px; display: grid; gap: 4px; }
+  .dcard .head { display: flex; align-items: center; gap: 8px; }
+  .dcard .num { font-weight: 750; cursor: pointer; margin-right: auto; }
+  .dcard .mosque { font-weight: 600; }
+  .dcard .actions .btn { flex: 1 1 auto; }
+  /* Products */
+  .tiers { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 4px; }
+  .tiers td { padding: 5px 0; border-top: 1px dashed var(--line); }
+  .tiers td:last-child { text-align: right; font-weight: 600; }
+  .tier-row { display: grid; grid-template-columns: 1fr 1fr 40px; gap: 8px; align-items: end; }
 
   /* Order drawer and forms */
   dialog { border: 0; padding: 0; background: var(--card); color: var(--ink); }
@@ -240,9 +260,9 @@
     .top h1 { font-size: 21px; }
     main { padding: 12px 16px 40px; }
     .grid { grid-template-columns: 1fr; }
-    .pipeline { grid-template-columns: repeat(2, 1fr); }
-    .stage:nth-child(3) { border-left: 0; }
-    .stage:nth-child(n+3) { border-top: 1px solid var(--line); }
+    .phone-only { display: inline-flex !important; }
+    .board { grid-template-columns: 1fr; }
+    .board .col:not(.on) { display: none; }
   }
   @media (max-width: 520px) {
     .kpi .v { font-size: 22px; }
@@ -342,8 +362,8 @@ const REASON = { damaged: 'Damaged', defective: 'Defective', expired: 'Expired',
   wrongmosque: 'Wrong mosque', otherdelivery: 'Other delivery problem', changeOfMind: 'Changed their mind',
   saqiCancelled: 'Cancelled by Saqi' };
 const STATUS = {
-  paymentPending: ['Awaiting payment', 'warn'], paymentFailed: ['Payment failed', 'bad'], confirmed: ['To prepare', 'info'],
-  preparing: ['Preparing', 'info'], outForDelivery: ['Out for delivery', 'warn'], retrying: ['Try again', 'warn'],
+  paymentPending: ['Awaiting payment', 'warn'], paymentFailed: ['Payment failed', 'bad'], confirmed: ['To deliver', 'info'],
+  preparing: ['To deliver', 'info'], outForDelivery: ['On the road', 'warn'], retrying: ['Try again', 'warn'],
   delivered: ['Delivered', 'good'], cancellationRequested: ['Cancellation requested', 'bad'], cancelled: ['Cancelled', ''],
 };
 const statusChip = (s) => { const [label, cls] = STATUS[s] ?? [s, '']; return `<span class="chip ${cls}">${esc(label)}</span>`; };
@@ -387,7 +407,9 @@ const RULES = {
   refund_exists: 'This order already has a refund.', reason_required: 'Please give a reason.',
   already_paid: 'This order is already paid.', customer_deleted: 'The customer deleted their account.',
   message_required: 'Please write a message.', message_too_long: 'The message is too long (600 characters at most).',
-  bad_channels: 'Choose at least one way to send it.', no_pending_cancellation: 'There is no cancellation request waiting.',
+  bad_channels: 'Choose at least one way to send it.', invalid_transition: 'That step is not possible for this order any more.',
+  bad_tiers: 'Prices must start at 1 carton, each tier for more cartons, and more cartons cannot cost more per carton.',
+  product_not_found: 'That product no longer exists.', no_pending_cancellation: 'There is no cancellation request waiting.',
   no_pending_report: 'There is no problem report waiting.', refund_not_sent: 'The refund has not been sent yet.',
 };
 const friendly = (msg) => RULES[String(msg ?? '').split(':')[0].trim()] ?? msg;
@@ -407,10 +429,10 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], tab = 'prepare';
+let me = null, role = null, myName = '', orders = [], requests = [], products = [], tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
-let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, showFailed = false;
+let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
 
 const ON_THE_WAY = ['confirmed', 'preparing', 'outForDelivery', 'retrying'];
 const UNPAID_AFTER = 30 * 60e3; // an order still awaiting payment after 30 minutes needs a look
@@ -423,14 +445,9 @@ const TABS = [
     sub: () => 'Everything customers, staff and MyFatoorah did, newest first' },
   { id: 'find', group: 'Control tower', label: 'Find an order', icon: 'search', ops: true, tower: true,
     sub: () => 'By order number, customer phone or name, or mosque' },
-  { id: 'prepare', group: 'Deliveries', label: 'To prepare', icon: 'box', match: (o) => o.status === 'confirmed',
-    sub: () => 'Paid orders waiting to be prepared' },
-  { id: 'preparing', group: 'Deliveries', label: 'Preparing', icon: 'flask', match: (o) => o.status === 'preparing',
-    sub: () => 'Being prepared, then sent out' },
-  { id: 'out', group: 'Deliveries', label: 'Out for delivery', icon: 'truck',
-    match: (o) => o.status === 'outForDelivery' || o.status === 'retrying', sub: () => 'On the road, or to try again' },
-  { id: 'done', group: 'Deliveries', label: 'Delivered', icon: 'check', quiet: true,
-    match: (o) => o.status === 'delivered' && Date.now() - new Date(o.delivered_at) < 7 * 864e5, sub: () => 'Delivered in the last 7 days' },
+  { id: 'deliveries', group: 'Deliveries', label: 'Deliveries', icon: 'truck',
+    count: () => orders.filter((o) => ON_THE_WAY.includes(o.status)).length,
+    sub: () => 'Paid orders to send out, on the road, and delivered today' },
   { id: 'decide', group: 'Customer care', label: 'Needs a decision', icon: 'alert', ops: true, tone: 'hot',
     match: (o) => o.status === 'cancellationRequested' || one(o.problem_reports)?.state === 'review',
     sub: () => 'Cancellation requests and problem reports' },
@@ -438,6 +455,9 @@ const TABS = [
     match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet confirmed by the customer' },
   { id: 'requests', group: 'Customer care', label: 'Mosque requests', icon: 'pin', ops: true,
     count: () => requests.length, sub: () => 'Mosques customers asked us to add' },
+  { id: 'products', group: 'Catalogue', label: 'Products', icon: 'box', ops: true,
+    count: () => products.filter((p) => p.out_of_stock).length || null, tone: 'hot',
+    sub: () => 'Prices and stock. Changes show in the app straight away.' },
 ];
 const tabById = (id) => TABS.find((t) => t.id === id);
 const countOf = (t) => t.count ? t.count() : t.match ? orders.filter(t.match).length : null;
@@ -446,7 +466,7 @@ const countOf = (t) => t.count ? t.count() : t.match ? orders.filter(t.match).le
 async function load() {
   const { data, error } = await db.from('orders')
     .select('id, number, status, pay_method, total_fils, placed_at, est_delivery, delivered_at, attempt_at, cancelled_from, ' +
-      'mosques(en, ar, area, lat, lng), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
+      'customer_id, mosques(en, ar, area, lat, lng), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
       'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference), ' +
       'problem_reports(reason, wants_refund, note, photos, at, state)')
     .not('status', 'in', '(paymentPending,paymentFailed)')
@@ -454,11 +474,14 @@ async function load() {
   if (error) return toast(error.message);
   orders = data;
   if (isOps()) {
-    const [r] = await Promise.all([
+    const [r, p] = await Promise.all([
       db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
+      db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils)')
+        .eq('active', true).order('sort'),
       loadTower(),
     ]);
     requests = r.data ?? [];
+    products = p.data ?? [];
   }
   render();
   if (openId && $('drawer').open) openOrder(openId);
@@ -505,6 +528,8 @@ function render() {
   if (tab === 'overview') return renderOverview();
   if (tab === 'activity') return renderActivity();
   if (tab === 'find') return renderFind();
+  if (tab === 'deliveries') return renderDeliveries();
+  if (tab === 'products') return renderProducts();
   if (tab === 'requests') {
     $('list').innerHTML = requests.length ? `<div class="grid">${requests.map(requestCard).join('')}</div>`
       : '<div class="card empty">No new mosque requests.</div>';
@@ -526,9 +551,8 @@ function orderActions(o, inDrawer = false) {
     }
     return a;
   }
-  if (o.status === 'confirmed') a.push(btn('Start preparing', 'advance', o.id, 'preparing', 'accent'));
-  if (o.status === 'preparing' || o.status === 'retrying') a.push(btn('Send out for delivery', 'advance', o.id, 'outForDelivery', 'accent'));
-  if (o.status === 'outForDelivery' || o.status === 'retrying') {
+  if (['confirmed', 'preparing', 'retrying'].includes(o.status)) a.push(btn('Send out for delivery', 'advance', o.id, 'outForDelivery', 'accent'));
+  if (o.status === 'outForDelivery') {
     a.push(btn('Delivered (take photo)', 'deliver', o.id, '', 'accent'));
     a.push(btn('Could not deliver', 'fail', o.id, '', 'ghost'));
   }
@@ -550,7 +574,10 @@ function orderCard(o) {
   const m = o.mosques ?? {}, c = o.customers ?? {}, r = one(o.refunds), p = one(o.problem_reports);
   const map = m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : '';
   const a = orderActions(o);
-  if (isOps()) a.push(`<button class="btn ghost" type="button" data-order="${o.id}">Details</button>`);
+  if (isOps()) {
+    if (c.phone) a.push(btn('Message', 'message', o.id, '', 'ghost'));
+    a.push(`<button class="btn ghost" type="button" data-order="${o.id}">Details</button>`);
+  }
   return `<article class="card ocard">
     <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>${statusChip(o.status)}</div>
     <div class="mosque">${esc(m.en)} <span class="sub">· ${esc(m.area)}${map}</span></div>
@@ -626,7 +653,7 @@ function eventText(e) {
     case 'refund_sent': return 'Refund sent through MyFatoorah' + (d.reference ? ` · ref ${d.reference}` : '');
     case 'refund_received': return 'Customer confirmed the refund arrived';
     case 'paid_again': return `Paid again as order SAQI${d.new_order ?? ''}`;
-    case 'message_queued': return d.kind === 'payment_reminder' ? 'Sent a payment reminder' : `Wrote to the customer: “${d.body ?? ''}”`;
+    case 'message_queued': return d.kind === 'payment_reminder' ? 'Sent a payment reminder' : `Wrote to the customer: “${d.body ?? d.body_ar ?? ''}”`;
     default: return String(e.event).replace(/_/g, ' ');
   }
 }
@@ -695,15 +722,14 @@ function renderOverview() {
   $('list').innerHTML = `
     <div class="kpis">
       ${kpi('cash', 'good', 'Paid today', `<small>BHD</small>${short(sum(paidToday))}`, `${paidToday.length} ${paidToday.length === 1 ? 'order' : 'orders'}`)}
-      ${kpi('truck', '', 'Due today', dueToday.length, 'deliveries still to make', 'prepare')}
+      ${kpi('truck', '', 'Due today', dueToday.length, 'deliveries still to make', 'deliveries:todo')}
       ${kpi('clock', late.length ? 'bad' : '', 'Late', late.length, late.length ? 'past the estimated day' : 'nothing late')}
-      ${kpi('check', 'good', 'Delivered today', deliveredToday.length, 'with a photo', 'done')}
+      ${kpi('check', 'good', 'Delivered today', deliveredToday.length, 'with a photo', 'deliveries:done')}
     </div>
     <div class="card pipeline">
-      <button class="stage ${stage('confirmed') ? 'on' : ''}" type="button" data-goto="prepare"><span>To prepare</span><b>${stage('confirmed')}</b></button>
-      <button class="stage ${stage('preparing') ? 'on' : ''}" type="button" data-goto="preparing"><span>Preparing</span><b>${stage('preparing')}</b></button>
-      <button class="stage ${stage(['outForDelivery', 'retrying']) ? 'on' : ''}" type="button" data-goto="out"><span>Out for delivery</span><b>${stage(['outForDelivery', 'retrying'])}</b></button>
-      <button class="stage ${deliveredToday.length ? 'on' : ''}" type="button" data-goto="done"><span>Delivered today</span><b>${deliveredToday.length}</b></button>
+      <button class="stage ${stage(['confirmed', 'preparing', 'retrying']) ? 'on' : ''}" type="button" data-goto="deliveries:todo"><span>To deliver</span><b>${stage(['confirmed', 'preparing', 'retrying'])}</b></button>
+      <button class="stage ${stage('outForDelivery') ? 'on' : ''}" type="button" data-goto="deliveries:road"><span>On the road</span><b>${stage('outForDelivery')}</b></button>
+      <button class="stage ${deliveredToday.length ? 'on' : ''}" type="button" data-goto="deliveries:done"><span>Delivered today</span><b>${deliveredToday.length}</b></button>
     </div>
     <div class="cols" style="margin-top:14px">
       <div class="card chart">
@@ -801,11 +827,188 @@ async function search(q) {
   render();
 }
 
+// ---------------------------------------------------------------- deliveries board
+// One page for the whole delivery run: to deliver (paid, or to try again after a failed
+// attempt), on the road, and delivered today. On a phone it shows one column at a time.
+const DCOLS = [
+  { id: 'todo', label: 'To deliver', match: (o) => ['confirmed', 'preparing', 'retrying'].includes(o.status) },
+  { id: 'road', label: 'On the road', match: (o) => o.status === 'outForDelivery' },
+  { id: 'done', label: 'Delivered today', match: (o) => o.status === 'delivered' && o.delivered_at && ymd(o.delivered_at) === today() },
+];
+
+function deliveryCard(o) {
+  const m = o.mosques ?? {}, c = o.customers ?? {};
+  const late = ON_THE_WAY.includes(o.status) && o.est_delivery < today();
+  const cartons = (o.order_lines ?? []).reduce((n, l) => n + l.cartons, 0);
+  const a = [];
+  if (['confirmed', 'preparing', 'retrying'].includes(o.status)) a.push(btn('Send out for delivery', 'advance', o.id, 'outForDelivery', 'accent'));
+  if (o.status === 'outForDelivery') {
+    a.push(btn('Delivered (photo)', 'deliver', o.id, '', 'accent'));
+    a.push(btn('Could not deliver', 'fail', o.id, '', 'ghost'));
+  }
+  if (isOps()) a.push(`<button class="btn ghost" type="button" data-order="${o.id}">Details</button>`);
+  return `<article class="card dcard">
+    <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>
+      ${late ? '<span class="chip bad">Late</span>' : ''}${o.status === 'retrying' ? '<span class="chip warn">Try again</span>' : ''}</div>
+    <div class="mosque">${esc(m.en)}</div>
+    <div class="sub">${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}</div>
+    <div class="sub"><b>${cartons} ${cartons === 1 ? 'carton' : 'cartons'}</b> · ${(o.order_lines ?? []).map((l) => `${l.cartons} of ${PRODUCT[l.product_id] ?? esc(l.product_id)}`).join(', ')}</div>
+    ${c.phone ? `<div class="sub">${esc(c.name || '')} <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a></div>` : ''}
+    ${o.status === 'retrying' && o.attempt_at ? `<div class="sub">Last attempt ${time(o.attempt_at)}</div>` : ''}
+    ${o.status === 'delivered' ? `<div class="sub">Delivered at ${clock(o.delivered_at)}</div>` : ''}
+    ${a.length ? `<div class="actions">${a.join('')}</div>` : ''}
+  </article>`;
+}
+
+function deliveryDay(o) {
+  if (o.status === 'delivered') return '';
+  const t = today();
+  if (o.est_delivery < t) return 'Late';
+  return o.est_delivery === t ? 'Today' : dayName(o.est_delivery);
+}
+
+function renderDeliveries() {
+  const cols = DCOLS.map((c) => {
+    const list = orders.filter(c.match).sort((a, b) => c.id === 'done'
+      ? new Date(b.delivered_at) - new Date(a.delivered_at)
+      : a.est_delivery.localeCompare(b.est_delivery) || String(a.mosques?.area).localeCompare(String(b.mosques?.area)));
+    return { ...c, list };
+  });
+  const col = (c) => {
+    const rows = []; let last = null;
+    for (const o of c.list) {
+      const d = deliveryDay(o);
+      if (d && d !== last) { last = d; rows.push(`<div class="dayhead">${esc(d)}</div>`); }
+      rows.push(deliveryCard(o));
+    }
+    return `<section class="col ${c.id === delCol ? 'on' : ''}"><header>${c.label}<span class="n">${c.list.length}</span></header>
+      ${rows.length ? rows.join('') : '<div class="empty">Nothing here right now.</div>'}</section>`;
+  };
+  $('list').innerHTML = `
+    ${isOps() ? `<div class="toolbar"><button class="btn ghost" type="button" data-bulk>${icon('msg')}Message customers</button></div>` : ''}
+    <div class="seg phone-only" role="group" aria-label="Column">${cols.map((c) =>
+      `<button type="button" aria-pressed="${c.id === delCol}" data-dcol="${c.id}">${c.label} (${c.list.length})</button>`).join('')}</div>
+    <div class="board">${cols.map(col).join('')}</div>`;
+}
+
+// ---------------------------------------------------------------- messages to many customers
+const channelChecks = (sms = false) => `
+  <div class="checks" role="group" aria-label="Send by">
+    <label><input type="checkbox" name="ch" value="push" checked> App notification</label>
+    <label><input type="checkbox" name="ch" value="sms" ${sms ? 'checked' : ''}> SMS</label>
+    <label><input type="checkbox" name="ch" value="whatsapp"> WhatsApp</label>
+  </div>`;
+const templateButtons = () =>
+  `<div class="templates">${TEMPLATES.map(([l], i) => `<button class="btn ghost sm" type="button" data-template="${i}">${l}</button>`).join('')}</div>`;
+
+function bulkForm() {
+  const t = today();
+  const groups = [
+    { id: 'today', label: 'Deliveries due today', list: orders.filter((o) => ON_THE_WAY.includes(o.status) && o.est_delivery === t) },
+    { id: 'late', label: 'Late deliveries', list: lateDeliveries() },
+    { id: 'road', label: 'On the road now', list: orders.filter((o) => o.status === 'outForDelivery') },
+    { id: 'all', label: 'Everything still to deliver', list: orders.filter((o) => ON_THE_WAY.includes(o.status)) },
+  ];
+  // One message per customer, about their next order in the group.
+  for (const g of groups) {
+    const seen = new Set();
+    g.list = g.list.filter((o) => o.customers?.phone && !seen.has(o.customer_id) && seen.add(o.customer_id));
+  }
+  ask({
+    title: 'Message customers', ok: 'Send', body: `
+      <label>To<select name="group">${groups.map((g) =>
+        `<option value="${g.id}">${g.label} (${g.list.length} ${g.list.length === 1 ? 'customer' : 'customers'})</option>`).join('')}</select></label>
+      ${templateButtons()}
+      ${messageBoxes('Each customer gets it once, in their own language, linked to their order and saved in its history.')}
+      ${channelChecks()}`,
+    submit: async (f) => {
+      const g = groups.find((x) => x.id === f.get('group'));
+      if (!g.list.length) return 'No customers in that group.';
+      let ok = 0, failed = 0;
+      for (const o of g.list) {
+        const { error } = await db.rpc('ops_send_message', { p_order: o.id, p_kind: 'message', p_body: f.get('body'), p_body_ar: f.get('body_ar'), p_channels: f.getAll('ch') });
+        if (error) { failed++; if (ok === 0 && failed === 1 && /required|channels|too_long/.test(error.message)) return friendly(error.message); } else ok++;
+      }
+      toast(`Queued for ${ok} ${ok === 1 ? 'customer' : 'customers'}${failed ? ` · ${failed} could not be sent` : ''}`);
+      await load();
+    },
+  });
+}
+
+// ---------------------------------------------------------------- products
+const productName = (p) => PRODUCT[p.id] ?? `${p.per_carton} × ${p.ml} ml`;
+const tiersOf = (p) => [...(p.product_tiers ?? [])].sort((a, b) => a.min_cartons - b.min_cartons);
+
+function renderProducts() {
+  $('list').innerHTML = `<div class="grid">${products.map((p) => {
+    const tiers = tiersOf(p);
+    return `<article class="card ocard">
+      <div class="head"><span class="num">${esc(productName(p))}</span>
+        ${p.out_of_stock ? `<span class="chip bad">Out of stock${p.back_on ? ' · back ' + esc(day(p.back_on)) : ''}</span>` : '<span class="chip good">In stock</span>'}</div>
+      <div class="sub">${p.per_carton} bottles of ${p.ml} ml per carton</div>
+      <table class="tiers">${tiers.map((t, i) => {
+        const next = tiers[i + 1];
+        const range = next ? (next.min_cartons - 1 === t.min_cartons ? `${t.min_cartons}` : `${t.min_cartons}–${next.min_cartons - 1}`) : `${t.min_cartons}+`;
+        return `<tr><td>${range} ${range === '1' ? 'carton' : 'cartons'}</td><td>${bhd(t.price_fils)} per carton</td></tr>`;
+      }).join('')}</table>
+      <div class="actions">
+        <button class="btn ${p.out_of_stock ? 'accent' : 'ghost'}" type="button" data-stock="${p.id}">${p.out_of_stock ? 'Back in stock' : 'Mark out of stock'}</button>
+        ${role === 'admin' ? `<button class="btn ghost" type="button" data-prices="${p.id}">Edit prices</button>` : ''}
+      </div>
+    </article>`;
+  }).join('')}</div>
+  <p class="sub">Customers see stock and price changes the next time they open Saqi. Anyone who saw an old price is asked to check the new total before paying. Adding and removing products comes with the next app update.</p>`;
+}
+
+function stockForm(id) {
+  const p = products.find((x) => x.id === id);
+  if (p.out_of_stock) {
+    ask({ title: `${productName(p)} back in stock`, ok: 'Back in stock', body: '<div class="sub">Customers can order it again straight away.</div>',
+      submit: async () => {
+        const { error } = await db.rpc('ops_set_stock', { p_product: id, p_out_of_stock: false, p_back_on: null });
+        if (error) return friendly(error.message);
+        toast('Back in stock'); await load();
+      } });
+    return;
+  }
+  ask({ title: `${productName(p)} out of stock`, ok: 'Mark out of stock', danger: true, body: `
+      <div class="sub">Customers can't order it until it is back. Orders already paid are not changed.</div>
+      <label>Expected back (optional)<input type="date" name="back" min="${today()}"></label>`,
+    submit: async (f) => {
+      const { error } = await db.rpc('ops_set_stock', { p_product: id, p_out_of_stock: true, p_back_on: f.get('back') || null });
+      if (error) return friendly(error.message);
+      toast('Marked out of stock'); await load();
+    } });
+}
+
+const tierRow = (min = '', price = '') => `<div class="tier-row">
+  <label>From cartons<input type="number" name="min" min="1" step="1" value="${min}" required></label>
+  <label>BHD per carton<input type="number" name="price" min="0.001" step="0.001" value="${price}" required></label>
+  <button class="btn ghost sm" type="button" data-rmtier aria-label="Remove this tier">${icon('x')}</button></div>`;
+function addTierRow() { $('tierRows').insertAdjacentHTML('beforeend', tierRow()); }
+
+function pricesForm(id) {
+  const p = products.find((x) => x.id === id);
+  ask({ title: `Prices · ${productName(p)}`, ok: 'Save prices', body: `
+      <div class="sub">Price per carton by order size. Start at 1 carton; bigger orders can only get the same or a lower price.</div>
+      <div id="tierRows" style="display:grid;gap:8px">${tiersOf(p).map((t) => tierRow(t.min_cartons, (t.price_fils / 1000).toFixed(3))).join('')}</div>
+      <button class="btn ghost sm" type="button" data-addtier>Add a tier</button>`,
+    submit: async (f) => {
+      const mins = f.getAll('min'), prices = f.getAll('price');
+      const tiers = mins.map((m, i) => ({ min_cartons: Number(m), price_fils: Math.round(Number(prices[i]) * 1000) }));
+      if (!confirm('Save the new prices? Customers see them the next time they open Saqi.')) return 'Not saved.';
+      const { error } = await db.rpc('ops_set_prices', { p_product: id, p_tiers: tiers });
+      if (error) return friendly(error.message);
+      toast('Prices saved'); await load();
+    } });
+}
+
 // ---------------------------------------------------------------- order drawer
 const NOTE_KIND = {
   order_confirmed: 'Order confirmed', cancellation_accepted: 'Cancellation accepted', cancellation_declined: 'Cancellation declined',
   delivered: 'Delivered', delivery_failed: 'Could not deliver', problem_approved: 'Problem approved', problem_rejected: 'Problem not approved',
   refund_sent: 'Refund sent', refund_received: 'Refund received', cancelled_by_saqi: 'Order cancelled by Saqi',
+  out_for_delivery: 'On its way', order_preparing: 'Being prepared',
   payment_reminder: 'Payment reminder', message: 'Message',
 };
 
@@ -819,6 +1022,7 @@ async function openOrder(id) {
   ]);
   if (o.error) return toast(o.error.message);
   const x = o.data, m = x.mosques ?? {}, c = x.customers ?? {}, r = one(x.refunds), p = one(x.problem_reports);
+  openLocale = c.locale ?? null;
   let photo = '';
   if (x.delivery_photo) {
     const s = await db.storage.from('delivery-photos').createSignedUrl(x.delivery_photo, 600);
@@ -833,7 +1037,7 @@ async function openOrder(id) {
     ${actions.length ? `<div class="dactions">${actions.join('')}</div>` : ''}
     <div class="facts">
       ${fact('Mosque', `${esc(m.en)} · ${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}`, true)}
-      ${fact('Customer', c.phone ? `${esc(c.name || 'No name')}<br><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>${c.email ? `<br><span class="sub">${esc(c.email)}</span>` : ''}` : 'Account deleted')}
+      ${fact('Customer', c.phone ? `${esc(c.name || 'No name')}<br><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>${c.email ? `<br><span class="sub">${esc(c.email)}</span>` : ''}<br><span class="sub">Uses Saqi in ${LANG[c.locale] ?? esc(c.locale)}</span>` : 'Account deleted')}
       ${fact('Total', `${bhd(x.total_fils)}<br><span class="sub">${PAY[x.pay_method] ?? esc(x.pay_method)}</span>`)}
       ${fact('Placed', time(x.placed_at))}
       ${fact('Paid', x.paid_at ? time(x.paid_at) : '<span class="muted">Not paid</span>')}
@@ -849,7 +1053,7 @@ async function openOrder(id) {
     ${photo ? `<div class="dsec"><h3>Delivery photo</h3>${photo}</div>` : ''}
     ${(nt.data ?? []).length ? `<div class="dsec"><h3>Messages to the customer</h3><div style="display:grid;gap:8px">${nt.data.map((n) => `
       <div class="msg"><div><b>${esc(NOTE_KIND[n.kind] ?? n.kind)}</b> · <span class="sub">${esc(time(n.created_at))}</span></div>
-        ${n.body ? `<div>${esc(n.body)}</div>` : ''}
+        ${n.body ? `<div>${esc(n.body)}</div>` : ''}${n.body_ar ? `<div dir="rtl" style="text-align:right">${esc(n.body_ar)}</div>` : ''}
         <div class="sub">${n.sent_at ? `Sent by ${esc(n.sent_via ?? 'push')} ${esc(time(n.sent_at))}` : n.error ? `<span style="color:var(--bad)">Not sent: ${esc(n.error)}</span>` : 'Waiting to be sent'}</div></div>`).join('')}</div></div>` : ''}
     <div class="dsec"><h3>History</h3>
       <ol class="timeline">${(ev.data ?? []).map((e) => `<li class="${eventTone(e)}">
@@ -879,25 +1083,31 @@ $('formEl').addEventListener('submit', async (e) => {
   } finally { $('formOk').disabled = false; }
 });
 
+// [label, English, Arabic]. Each customer gets the text in their own language.
 const TEMPLATES = [
-  ['Running late', "We're running a little late with your Saqi delivery today. Thank you for your patience."],
-  ['Mosque closed', "Our driver found the mosque closed. We'll try again on the next delivery day."],
-  ['Out of stock', "Sorry, this water is out of stock right now. We'll be in touch about your order."],
+  ['Running late', "We're running a little late with your Saqi delivery today. Thank you for your patience.",
+    'نعتذر، نتأخر قليلًا في توصيل طلبك من ساقي اليوم. شكرًا لصبرك.'],
+  ['Mosque closed', "Our driver found the mosque closed. We'll try again on the next delivery day.",
+    'وجد سائقنا المسجد مغلقًا. سنحاول مرة أخرى في يوم التوصيل التالي.'],
+  ['Out of stock', "Sorry, this water is out of stock right now. We'll be in touch about your order.",
+    'نعتذر، هذا الماء غير متوفر حاليًا. سنتواصل معك بخصوص طلبك.'],
 ];
+// English and Arabic boxes; whichever is filled in is used when the other is empty.
+const LANG = { en: 'English', ar: 'Arabic' };
+const messageBoxes = (hint = '') => `
+  <label>English<textarea name="body" maxlength="600" placeholder="Message in English"></textarea></label>
+  <label>العربية<textarea name="body_ar" maxlength="600" dir="rtl" placeholder="الرسالة بالعربية"></textarea></label>
+  <div class="sub">${hint || 'Each customer gets the text in their own language. Fill in both, or one for everyone.'}</div>`;
 
-function messageForm(orderId) {
+function messageForm(orderId, locale) {
   ask({
     title: 'Message the customer', ok: 'Send', body: `
-      <div class="templates">${TEMPLATES.map(([l], i) => `<button class="btn ghost sm" type="button" data-template="${i}">${l}</button>`).join('')}</div>
-      <label>Message<textarea name="body" maxlength="600" required placeholder="Write in the customer's language"></textarea></label>
-      <div class="checks" role="group" aria-label="Send by">
-        <label><input type="checkbox" name="ch" value="push" checked> App notification</label>
-        <label><input type="checkbox" name="ch" value="sms"> SMS</label>
-        <label><input type="checkbox" name="ch" value="whatsapp"> WhatsApp</label>
-      </div>
+      ${templateButtons()}
+      ${messageBoxes(locale ? `This customer uses Saqi in <b>${LANG[locale] ?? esc(locale)}</b>, so they get that text (or the other one if it is empty).` : '')}
+      ${channelChecks()}
       <div class="sub">It goes out by the first way that reaches the customer, in the order ticked: the app (if they allowed notifications), then SMS, then WhatsApp. Saved in the order's history.</div>`,
     submit: async (f) => {
-      const { error } = await db.rpc('ops_send_message', { p_order: orderId, p_kind: 'message', p_body: f.get('body'), p_channels: f.getAll('ch') });
+      const { error } = await db.rpc('ops_send_message', { p_order: orderId, p_kind: 'message', p_body: f.get('body'), p_body_ar: f.get('body_ar'), p_channels: f.getAll('ch') });
       if (error) return friendly(error.message);
       toast('Message queued'); await load();
     },
@@ -908,11 +1118,7 @@ function reminderForm(orderId) {
   ask({
     title: 'Send a payment reminder', ok: 'Send reminder', body: `
       <div class="sub">The customer gets a short note, in their language, that the order was not paid and they can try again in the Saqi app.</div>
-      <div class="checks" role="group" aria-label="Send by">
-        <label><input type="checkbox" name="ch" value="push" checked> App notification</label>
-        <label><input type="checkbox" name="ch" value="sms" checked> SMS</label>
-        <label><input type="checkbox" name="ch" value="whatsapp"> WhatsApp</label>
-      </div>`,
+      ${channelChecks(true)}`,
     submit: async (f) => {
       const { error } = await db.rpc('ops_send_message', { p_order: orderId, p_kind: 'payment_reminder', p_body: null, p_channels: f.getAll('ch') });
       if (error) return friendly(error.message);
@@ -1011,7 +1217,7 @@ async function act(b) {
       await load();
     }
     if (act === 'remind') reminderForm(id);
-    if (act === 'message') messageForm(id);
+    if (act === 'message') messageForm(id, openId === id ? openLocale : null);
     if (act === 'staffcancel') cancelForm(id);
   } finally { b.disabled = false; }
 }
@@ -1022,11 +1228,30 @@ document.addEventListener('click', (e) => {
   if (t.closest('[data-close]')) { t.closest('dialog')?.close(); return; }
   if (t.closest('[data-signout]')) { db.auth.signOut(); return; }
   const tpl = t.closest('[data-template]');
-  if (tpl) { $('formEl').elements.body.value = TEMPLATES[tpl.dataset.template][1]; return; }
+  if (tpl) {
+    const [, en, ar] = TEMPLATES[tpl.dataset.template];
+    $('formEl').elements.body.value = en; $('formEl').elements.body_ar.value = ar;
+    return;
+  }
   const tabBtn = t.closest('[data-tab]');
   if (tabBtn) { setTab(tabBtn.dataset.tab); return; }
   const go = t.closest('[data-goto]');
-  if (go) { if (go.dataset.goto !== tab) setTab(go.dataset.goto); return; }
+  if (go) {
+    const [to, col] = go.dataset.goto.split(':');
+    if (col) delCol = col;
+    if (to !== tab) setTab(to); else render();
+    return;
+  }
+  const dcol = t.closest('[data-dcol]');
+  if (dcol) { delCol = dcol.dataset.dcol; render(); return; }
+  if (t.closest('[data-bulk]')) { bulkForm(); return; }
+  const st = t.closest('[data-stock]');
+  if (st) { stockForm(st.dataset.stock); return; }
+  const pr = t.closest('[data-prices]');
+  if (pr) { pricesForm(pr.dataset.prices); return; }
+  if (t.closest('[data-addtier]')) { addTierRow(); return; }
+  const rm = t.closest('[data-rmtier]');
+  if (rm) { rm.closest('.tier-row').remove(); return; }
   const feed = t.closest('[data-feed]');
   if (feed) { feedFilter = feed.dataset.feed; render(); return; }
   if (t.closest('[data-toggle-failed]')) { showFailed = !showFailed; render(); return; }
@@ -1076,7 +1301,7 @@ async function start(session) {
   $('whoName').textContent = staff.name;
   $('whoRole').textContent = { admin: 'Admin', ops: 'Operations', driver: 'Driver' }[staff.role] ?? staff.role;
   $('login').hidden = true; $('app').hidden = false;
-  tab = isOps() ? 'overview' : 'prepare';
+  tab = isOps() ? 'overview' : 'deliveries';
   try { tab = localStorage.getItem('saqi.ops.tab') || tab; } catch (_) {}
   await load();
   if (!channel) {
