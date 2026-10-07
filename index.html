@@ -623,6 +623,7 @@ function eventText(e) {
     case 'replacement_approved': return 'Approved a free replacement';
     case 'refund_sent': return 'Refund sent through MyFatoorah' + (d.reference ? ` · ref ${d.reference}` : '');
     case 'refund_received': return 'Customer confirmed the refund arrived';
+    case 'paid_again': return `Paid again as order SAQI${d.new_order ?? ''}`;
     case 'message_queued': return d.kind === 'payment_reminder' ? 'Sent a payment reminder' : `Wrote to the customer: “${d.body ?? ''}”`;
     default: return String(e.event).replace(/_/g, ' ');
   }
@@ -892,7 +893,7 @@ function messageForm(orderId) {
         <label><input type="checkbox" name="ch" value="sms"> SMS</label>
         <label><input type="checkbox" name="ch" value="whatsapp"> WhatsApp</label>
       </div>
-      <div class="sub">It is sent by the first way that reaches the customer, in the order ticked. Saved in the order's history.</div>`,
+      <div class="sub">It goes out by the first way that reaches the customer, in the order ticked: the app (if they allowed notifications), then SMS, then WhatsApp. Saved in the order's history.</div>`,
     submit: async (f) => {
       const { error } = await db.rpc('ops_send_message', { p_order: orderId, p_kind: 'message', p_body: f.get('body'), p_channels: f.getAll('ch') });
       if (error) return friendly(error.message);
