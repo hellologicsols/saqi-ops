@@ -409,7 +409,10 @@ const RULES = {
   message_required: 'Please write a message.', message_too_long: 'The message is too long (600 characters at most).',
   bad_channels: 'Choose at least one way to send it.', invalid_transition: 'That step is not possible for this order any more.',
   bad_tiers: 'Prices must start at 1 carton, each tier for more cartons, and more cartons cannot cost more per carton.',
-  product_not_found: 'That product no longer exists.', no_pending_cancellation: 'There is no cancellation request waiting.',
+  product_not_found: 'That product no longer exists.', product_exists: 'That bottle size and carton are already on sale.',
+  bad_product: 'Check the bottle size and the number of bottles per carton.', last_product: 'At least one product has to stay on sale.',
+  mosque_details_required: 'Fill in the name in English and Arabic, and the area.', bad_governorate: 'Choose a governorate.',
+  bad_location: 'That location is not in Bahrain. Check the map link or coordinates.', mosque_not_found: 'That mosque no longer exists.', no_pending_cancellation: 'There is no cancellation request waiting.',
   no_pending_report: 'There is no problem report waiting.', refund_not_sent: 'The refund has not been sent yet.',
 };
 const friendly = (msg) => RULES[String(msg ?? '').split(':')[0].trim()] ?? msg;
@@ -429,7 +432,7 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], products = [], tab = 'deliveries', delCol = 'todo';
+let me = null, role = null, myName = '', orders = [], requests = [], products = [], mosques = [], mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
 let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
@@ -455,8 +458,11 @@ const TABS = [
     match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet confirmed by the customer' },
   { id: 'requests', group: 'Customer care', label: 'Mosque requests', icon: 'pin', ops: true,
     count: () => requests.length, sub: () => 'Mosques customers asked us to add' },
+  { id: 'mosques', group: 'Catalogue', label: 'Mosques', icon: 'pin', ops: true,
+    count: () => mosques.filter((m) => !m.served && m.active).length || null, tone: 'hot',
+    sub: () => 'Add mosques, put them on hold or remove them. The app picks changes up when it opens (build 10 and later).' },
   { id: 'products', group: 'Catalogue', label: 'Products', icon: 'box', ops: true,
-    count: () => products.filter((p) => p.out_of_stock).length || null, tone: 'hot',
+    count: () => products.filter((p) => p.active && p.out_of_stock).length || null, tone: 'hot',
     sub: () => 'Prices and stock. Changes show in the app straight away.' },
 ];
 const tabById = (id) => TABS.find((t) => t.id === id);
@@ -477,8 +483,9 @@ async function load() {
     const [r, p] = await Promise.all([
       db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
       db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils)')
-        .eq('active', true).order('sort'),
+        .order('sort'),
       loadTower(),
+      loadMosques(),
     ]);
     requests = r.data ?? [];
     products = p.data ?? [];
@@ -530,6 +537,7 @@ function render() {
   if (tab === 'find') return renderFind();
   if (tab === 'deliveries') return renderDeliveries();
   if (tab === 'products') return renderProducts();
+  if (tab === 'mosques') return renderMosques();
   if (tab === 'requests') {
     $('list').innerHTML = requests.length ? `<div class="grid">${requests.map(requestCard).join('')}</div>`
       : '<div class="card empty">No new mosque requests.</div>';
@@ -604,7 +612,7 @@ function requestCard(r) {
     <div class="sub">${esc(r.area)} · ${time(r.created_at)}</div>
     ${r.map_link ? `<div><a href="${esc(r.map_link)}" target="_blank" rel="noopener">Map link</a></div>` : ''}
     ${r.notes ? `<div class="box">${esc(r.notes)}</div>` : ''}
-    <div class="actions">${btn('Mark added', 'request', r.id, 'added', 'accent')}${btn('Reject', 'request', r.id, 'rejected', 'ghost')}</div>
+    <div class="actions">${btn('Add this mosque', 'addmosque', r.id, '', 'accent')}${btn('Reject', 'request', r.id, 'rejected', 'ghost')}</div>
   </article>`;
 }
 
@@ -940,7 +948,10 @@ const productName = (p) => PRODUCT[p.id] ?? `${p.per_carton} × ${p.ml} ml`;
 const tiersOf = (p) => [...(p.product_tiers ?? [])].sort((a, b) => a.min_cartons - b.min_cartons);
 
 function renderProducts() {
-  $('list').innerHTML = `<div class="grid">${products.map((p) => {
+  const removed = products.filter((p) => !p.active);
+  $('list').innerHTML = `
+    ${role === 'admin' ? `<div class="toolbar"><button class="btn accent" type="button" data-addproduct>Add a product</button></div>` : ''}
+    <div class="grid">${products.filter((p) => p.active).map((p) => {
     const tiers = tiersOf(p);
     return `<article class="card ocard">
       <div class="head"><span class="num">${esc(productName(p))}</span>
@@ -953,11 +964,143 @@ function renderProducts() {
       }).join('')}</table>
       <div class="actions">
         <button class="btn ${p.out_of_stock ? 'accent' : 'ghost'}" type="button" data-stock="${p.id}">${p.out_of_stock ? 'Back in stock' : 'Mark out of stock'}</button>
-        ${role === 'admin' ? `<button class="btn ghost" type="button" data-prices="${p.id}">Edit prices</button>` : ''}
+        ${role === 'admin' ? `<button class="btn ghost" type="button" data-prices="${p.id}">Edit prices</button>
+          ${btn('Remove from sale', 'product', p.id, 'off', 'danger')}` : ''}
       </div>
     </article>`;
   }).join('')}</div>
-  <p class="sub">Customers see stock and price changes the next time they open Saqi. Anyone who saw an old price is asked to check the new total before paying. Adding and removing products comes with the next app update.</p>`;
+  ${removed.length ? `<div class="section"><h2>Removed from sale</h2></div>
+    ${panel(removed.map((p) => `<div class="row" style="cursor:default"><span class="av">${icon('box')}</span>
+      <span><span class="what">${esc(productName(p))}</span><div class="meta">Not offered. Earlier orders still show it.</div></span>
+      <span class="end">${role === 'admin' ? btn('Put back on sale', 'product', p.id, 'on', 'ghost sm') : ''}</span></div>`), '')}` : ''}
+  <p class="sub">Customers see changes the next time they open Saqi. Anyone who saw an old price is asked to check the new total before paying. New products show in the app from build 10; removing one is safe for build 10 and later.</p>`;
+}
+
+async function setProductActive(id, on) {
+  const p = products.find((x) => x.id === id);
+  if (!on && !confirm(`Remove ${productName(p)} from sale? Customers can no longer order it. Orders already placed are not changed.`)) return;
+  const { error } = await db.rpc('ops_set_product_active', { p_product: id, p_active: on });
+  if (error) return toast(friendly(error.message));
+  toast(on ? 'Back on sale' : 'Removed from sale'); await load();
+}
+
+function productForm() {
+  ask({ title: 'Add a product', ok: 'Add product', body: `
+      <div class="sub">The app names products by size, for example “24 × 500 ml”, in English and Arabic.</div>
+      <div class="tier-row" style="grid-template-columns:1fr 1fr">
+        <label>Bottle size (ml)<input type="number" name="ml" min="50" max="20000" step="1" required></label>
+        <label>Bottles per carton<input type="number" name="per" min="1" max="200" step="1" required></label>
+      </div>
+      <div class="sub">Price per carton by order size. Start at 1 carton; bigger orders can only get the same or a lower price.</div>
+      <div id="tierRows" style="display:grid;gap:8px">${tierRow(1, '')}</div>
+      <button class="btn ghost sm" type="button" data-addtier>Add a tier</button>`,
+    submit: async (f) => {
+      const mins = f.getAll('min'), prices = f.getAll('price');
+      const tiers = mins.map((m, i) => ({ min_cartons: Number(m), price_fils: Math.round(Number(prices[i]) * 1000) }));
+      const { error } = await db.rpc('ops_add_product', { p_ml: Number(f.get('ml')), p_per_carton: Number(f.get('per')), p_tiers: tiers });
+      if (error) return friendly(error.message);
+      toast('Product added'); await load();
+    } });
+}
+
+// ---------------------------------------------------------------- mosques
+// The app ships with the 1,245 mosques of the Bahrain directory; staff add more, put mosques
+// on hold (not served for now) or remove them. Loaded in pages (the API returns 1,000 rows at most).
+async function loadMosques() {
+  const all = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from('mosques')
+      .select('id, en, ar, area, gov, lat, lng, served, active, bundled, added_at').order('en').range(from, from + 999);
+    if (error) { toast(error.message); break; }
+    all.push(...data);
+    if (data.length < 1000) break;
+  }
+  mosques = all;
+}
+
+const MFILTERS = [
+  { id: 'changed', label: 'On hold, removed or added', match: (m) => !m.served || !m.active || !m.bundled },
+  { id: 'all', label: 'All mosques', match: (m) => m.active },
+  { id: 'hold', label: 'On hold', match: (m) => m.active && !m.served },
+  { id: 'removed', label: 'Removed', match: (m) => !m.active },
+  { id: 'added', label: 'Added by staff', match: (m) => !m.bundled },
+];
+
+function mosqueRow(m) {
+  const chip = !m.active ? '<span class="chip">Removed</span>' : !m.served ? '<span class="chip warn">On hold</span>' : '<span class="chip good">Delivering</span>';
+  const a = [];
+  if (m.active) a.push(m.served ? btn('Put on hold', 'mosque', m.id, 'hold', 'ghost sm') : btn('Deliver again', 'mosque', m.id, 'serve', 'accent sm'));
+  a.push(m.active ? btn('Remove', 'mosque', m.id, 'remove', 'danger sm') : btn('Restore', 'mosque', m.id, 'restore', 'ghost sm'));
+  return `<div class="row" style="cursor:default"><span class="av">${icon('pin')}</span>
+    <span><span class="what">${esc(m.en)}</span> ${chip}${!m.bundled ? ' <span class="chip info">Added</span>' : ''}
+      <div class="meta"><span dir="rtl">${esc(m.ar)}</span> · ${esc(m.area)} · ${esc(m.gov)} · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a></div></span>
+    <span class="end"><div class="actions" style="justify-content:flex-end;margin:0">${a.join('')}</div></span></div>`;
+}
+
+function renderMosques() {
+  if (!$('mosqueSearch')) {
+    $('list').innerHTML = `
+      <div class="toolbar"><button class="btn accent" type="button" data-addmosque>Add a mosque</button></div>
+      <form class="search" id="mosqueSearch" role="search"><input id="mq" type="search" placeholder="Search by name in English or Arabic, or area" autocomplete="off" aria-label="Search mosques"></form>
+      <div id="mosqueFilters"></div><div id="mosqueRows"></div>`;
+    $('mq').value = mosqueQuery;
+    $('mq').addEventListener('input', () => { mosqueQuery = $('mq').value; renderMosqueRows(); });
+  }
+  renderMosqueRows();
+}
+
+function renderMosqueRows() {
+  const f = MFILTERS.find((x) => x.id === mosqueFilter) ?? MFILTERS[0];
+  $('mosqueFilters').innerHTML = `<div class="seg" role="group" aria-label="Show">${MFILTERS.map((x) =>
+    `<button type="button" aria-pressed="${x.id === f.id}" data-mfilter="${x.id}">${x.label} (${mosques.filter(x.match).length})</button>`).join('')}</div>`;
+  const q = mosqueQuery.trim().toLowerCase();
+  let list = mosques.filter(f.match);
+  if (q) list = mosques.filter((m) => `${m.en} ${m.ar} ${m.area}`.toLowerCase().includes(q));
+  $('mosqueRows').innerHTML = panel(list.slice(0, 100).map(mosqueRow), q ? 'No mosques match.' : 'Nothing here. Every mosque in the directory is being delivered to.')
+    + (list.length > 100 ? `<p class="sub">Showing 100 of ${list.length}. Search to narrow it down.</p>` : '');
+}
+
+async function setMosque(id, what) {
+  const m = mosques.find((x) => x.id === id);
+  const next = { hold: [false, true], serve: [true, true], remove: [false, false], restore: [true, true] }[what];
+  const msg = { hold: `Put ${m.en} on hold? Customers see “Delivery isn't available yet” and can ask to be told when it is. Orders already placed are not changed.`,
+    remove: `Remove ${m.en}? It disappears from search in the app. Orders already placed are not changed.` }[what];
+  if (msg && !confirm(msg)) return;
+  const { error } = await db.rpc('ops_set_mosque', { p_mosque: id, p_served: next[0], p_active: next[1] });
+  if (error) return toast(friendly(error.message));
+  toast({ hold: 'On hold', serve: 'Delivering again', remove: 'Removed', restore: 'Restored' }[what]);
+  await load();
+}
+
+// A map location from a Google Maps link or "26.15, 50.62".
+function parseLocation(text) {
+  const s = decodeURIComponent(String(text || ''));
+  const m = s.match(/@(-?\d+\.\d+),\s*(-?\d+\.\d+)/) || s.match(/[?&](?:q|ll|query)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/)
+    || s.match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+function mosqueForm(request) {
+  const govs = ['Capital', 'Northern', 'Muharraq', 'Southern'];
+  ask({ title: request ? 'Add the requested mosque' : 'Add a mosque', ok: 'Add mosque', body: `
+      ${request?.notes ? `<div class="box">${esc(request.notes)}</div>` : ''}
+      <label>Name in English<input name="en" required value="${esc(request?.name ?? '')}"></label>
+      <label>الاسم بالعربية<input name="ar" dir="rtl" required></label>
+      <div class="tier-row" style="grid-template-columns:1fr 1fr">
+        <label>Area<input name="area" required value="${esc(request?.area ?? '')}"></label>
+        <label>Governorate<select name="gov" required>${govs.map((g) => `<option>${g}</option>`).join('')}</select></label>
+      </div>
+      <label>Location (Google Maps link, or latitude, longitude)<input name="loc" required value="${esc(request?.map_link ?? '')}" placeholder="https://maps.google.com/… or 26.15, 50.62"></label>
+      <label>Type<select name="type"><option>Masjid</option><option>Jamea</option></select></label>
+      <div class="sub">It is added as delivering. Short links (maps.app.goo.gl) don't include the location: open them and copy the coordinates instead.</div>`,
+    submit: async (f) => {
+      const loc = parseLocation(f.get('loc'));
+      if (!loc) return 'Paste a Google Maps link with the location in it, or coordinates like 26.15, 50.62.';
+      const { error } = await db.rpc('ops_add_mosque', { p_en: f.get('en'), p_ar: f.get('ar'), p_area: f.get('area'), p_gov: f.get('gov'),
+        p_lat: loc[0], p_lng: loc[1], p_type: f.get('type'), p_request: request?.id ?? null });
+      if (error) return friendly(error.message);
+      toast('Mosque added'); await load();
+    } });
 }
 
 function stockForm(id) {
@@ -1217,6 +1360,9 @@ async function act(b) {
       await load();
     }
     if (act === 'remind') reminderForm(id);
+    if (act === 'addmosque') mosqueForm(requests.find((r) => r.id === id));
+    if (act === 'mosque') await setMosque(id, arg);
+    if (act === 'product') await setProductActive(id, arg === 'on');
     if (act === 'message') messageForm(id, openId === id ? openLocale : null);
     if (act === 'staffcancel') cancelForm(id);
   } finally { b.disabled = false; }
@@ -1245,6 +1391,10 @@ document.addEventListener('click', (e) => {
   const dcol = t.closest('[data-dcol]');
   if (dcol) { delCol = dcol.dataset.dcol; render(); return; }
   if (t.closest('[data-bulk]')) { bulkForm(); return; }
+  if (t.closest('[data-addproduct]')) { productForm(); return; }
+  if (t.closest('[data-addmosque]')) { mosqueForm(null); return; }
+  const mf = t.closest('[data-mfilter]');
+  if (mf) { mosqueFilter = mf.dataset.mfilter; mosqueQuery = ''; if ($('mq')) $('mq').value = ''; renderMosqueRows(); return; }
   const st = t.closest('[data-stock]');
   if (st) { stockForm(st.dataset.stock); return; }
   const pr = t.closest('[data-prices]');
@@ -1265,6 +1415,7 @@ $('drawer').addEventListener('click', (e) => { if (e.target === $('drawer')) $('
 $('drawer').addEventListener('close', () => { openId = null; });
 
 $('list').addEventListener('submit', (e) => {
+  if (e.target.id === 'mosqueSearch') { e.preventDefault(); return; }
   if (e.target.id !== 'findForm') return;
   e.preventDefault();
   search($('q').value);
