@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Saqi Operations</title>
+<!--
+  Saqi operations panel for staff and drivers. One static page: open it from any web host
+  (or locally). Staff sign in with the email and password created for them in Supabase
+  (Authentication > Users), and must be listed in the public.staff table.
+  Every action goes through the database rules (ops_* functions) or the refunds-send Edge
+  Function, so the panel cannot do anything the rules do not allow.
+  Ops and admin also get the control tower (Overview, Activity, Find an order, and each
+  order's full history from the order_events audit log). It only reads.
+-->
+<style>
+  :root {
+    --ink: #0A2533; --sub: #4E6672; --muted: #8AA0AA; --line: #E3EAED; --bg: #F3F6F7; --card: #FFFFFF;
+    --accent: #0E8FA8; --accent-ink: #FFFFFF; --good: #1E8E5A; --good-bg: #E6F4EC;
+    --warn: #B26A00; --warn-bg: #FFF4E0; --bad: #C0392B; --bad-bg: #FDECEA; --chip: #EDF2F4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #E8F0F3; --sub: #A9BCC4; --muted: #7D939C; --line: #22343D; --bg: #0B171D; --card: #12222A;
+      --chip: #1B2E37; --good-bg: #133326; --warn-bg: #3A2A0E; --bad-bg: #3A1714;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--ink); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line);
+           padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  header .who { color: var(--sub); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 14px; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px;
+         padding: 7px 14px; font-weight: 600; font-size: 14px; white-space: nowrap; cursor: pointer; }
+  .tab[aria-selected="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); }
+  .tab .n { display: inline-block; min-width: 20px; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+            background: var(--chip); color: var(--ink); font-size: 12px; text-align: center; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .num { font-weight: 700; font-size: 16px; }
+  .chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--chip); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.good { background: var(--good-bg); color: var(--good); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .mosque { margin-top: 6px; font-weight: 600; }
+  .sub { color: var(--sub); font-size: 13px; }
+  .lines { margin: 8px 0; padding: 0; list-style: none; font-size: 14px; }
+  .lines li { display: flex; justify-content: space-between; border-top: 1px dashed var(--line); padding: 4px 0; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  button.btn { border: 0; border-radius: 10px; padding: 9px 14px; font-weight: 600; font-size: 14px; cursor: pointer;
+               background: var(--ink); color: var(--card); min-height: 40px; }
+  button.btn.accent { background: var(--accent); color: var(--accent-ink); }
+  button.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button.btn.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  a { color: var(--accent); }
+  .empty { color: var(--sub); text-align: center; padding: 40px 16px; }
+  .box { background: var(--chip); border-radius: 10px; padding: 8px 10px; margin-top: 8px; font-size: 14px; }
+  .photos { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .photos img { width: 92px; height: 92px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+  form.login { max-width: 360px; margin: 10vh auto; background: var(--card); border: 1px solid var(--line);
+               border-radius: 16px; padding: 22px; display: grid; gap: 12px; }
+  form.login h1 { margin: 0 0 4px; font-size: 22px; }
+  input { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--ink); width: 100%; }
+  .err { color: var(--bad); font-size: 14px; min-height: 1em; }
+  .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--ink); color: var(--card);
+           padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 10; max-width: calc(100% - 32px); }
+  /* Control tower (ops and admin): overview, activity feed, order search, order history. */
+  .kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px;
+         text-align: left; font: inherit; color: inherit; }
+  button.kpi { cursor: pointer; }
+  .kpi .v { font-size: 22px; font-weight: 700; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.bad .v { color: var(--bad); }
+  .section { display: flex; justify-content: space-between; align-items: baseline; margin: 22px 0 8px;
+             font-size: 13px; font-weight: 700; color: var(--sub); text-transform: uppercase; letter-spacing: .04em; }
+  .section a { text-transform: none; letter-spacing: 0; font-weight: 600; cursor: pointer; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .panel .empty { padding: 20px 16px; }
+  .item { display: grid; grid-template-columns: 96px 1fr auto; gap: 2px 12px; padding: 10px 14px;
+          border-top: 1px solid var(--line); cursor: pointer; align-items: baseline; }
+  .item:first-child { border-top: 0; }
+  .item:hover { background: var(--bg); }
+  .item .t { color: var(--sub); font-size: 13px; }
+  .item .what { font-weight: 600; }
+  .item .r { text-align: right; font-size: 13px; color: var(--sub); white-space: nowrap; }
+  .bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; align-items: end; height: 110px; padding: 14px 14px 0; }
+  .bar { background: var(--accent); border-radius: 6px 6px 0 0; min-height: 2px; }
+  .barlabels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 6px 14px 12px;
+               font-size: 12px; color: var(--sub); text-align: center; }
+  .barlabels b { display: block; color: var(--ink); font-weight: 600; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  form.search { display: flex; gap: 8px; margin-bottom: 12px; }
+  dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(580px, calc(100% - 32px));
+           max-height: calc(100% - 48px); background: var(--card); color: var(--ink); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  .dlg-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px;
+              border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--card); }
+  .dlg-body { padding: 14px 16px 18px; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 5px 12px; margin: 0; font-size: 14px; }
+  .kv dt { color: var(--sub); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .timeline { list-style: none; padding: 0 0 0 6px; margin: 8px 0 0; }
+  .timeline li { border-left: 2px solid var(--line); padding: 0 0 14px 16px; position: relative; }
+  .timeline li:last-child { padding-bottom: 0; }
+  .timeline li::before { content: ''; position: absolute; left: -7px; top: 5px; width: 12px; height: 12px;
+                         border-radius: 50%; background: var(--accent); }
+  .delivery-photo { width: 100%; max-height: 260px; object-fit: cover; border-radius: 10px; margin-top: 8px; border: 1px solid var(--line); }
+  [hidden] { display: none !important; }
+  @media (max-width: 520px) {
+    .grid { grid-template-columns: 1fr; } main { padding: 12px 16px; } header .who { display: none; }
+    .kpis { grid-template-columns: 1fr 1fr; }
+    .item { grid-template-columns: 1fr auto; } .item .t { grid-column: 1 / -1; }
+    .kv { grid-template-columns: 1fr; } .kv dd { margin-bottom: 6px; }
+  }
+</style>
+</head>
+<body>
+<form class="login" id="login" hidden>
+  <h1>Saqi Operations</h1>
+  <div class="sub">Staff sign-in</div>
+  <input id="email" type="email" autocomplete="username" placeholder="Email" required>
+  <input id="password" type="password" autocomplete="current-password" placeholder="Password" required>
+  <button class="btn accent" type="submit">Sign in</button>
+  <div class="err" id="loginErr"></div>
+</form>
+
+<div id="app" hidden>
+  <header>
+    <h1>Saqi Operations</h1>
+    <span class="who" id="who"></span>
+    <button class="btn ghost" id="signout" type="button">Sign out</button>
+  </header>
+  <main>
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+    <div id="list" class="grid"></div>
+  </main>
+</div>
+<dialog id="detail" aria-labelledby="detailTitle">
+  <div class="dlg-head"><b id="detailTitle"></b><button class="btn ghost" id="detailClose" type="button">Close</button></div>
+  <div class="dlg-body" id="detailBody"></div>
+</dialog>
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// saqi-dev project. The publishable key is public by design; access is decided by
+// Row-Level Security and the staff table. For production, change these two values.
+const SUPABASE_URL = 'https://uvtmlsucibhedlybclsp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_THYtyx_nXFHS-M5PB41uTQ_bJNK-kqv';
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = (id) => document.getElementById(id);
+const bhd = (fils) => 'BHD ' + (fils / 1000).toFixed(3);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const day = (d) => d ? new Date(d + (d.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+const TZ = 'Asia/Bahrain';
+const time = (d) => d ? new Date(d).toLocaleString('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const ymd = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: TZ }); // YYYY-MM-DD in Bahrain
+const today = () => ymd(Date.now());
+const ago = (d) => {
+  const s = (Date.now() - new Date(d)) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return time(d);
+};
+const PRODUCT = { a: '40 × 330 ml', b: '12 × 330 ml', c: '40 × 200 ml', d: '20 × 200 ml' };
+const PAY = { benefitPay: 'BenefitPay', debit: 'Debit card', credit: 'Credit card' };
+const REASON = { damaged: 'Damaged', defective: 'Defective', expired: 'Expired', incorrect: 'Wrong water or size',
+  missing: 'Missing cartons', mismatch: "Doesn't match the order", notdelivered: 'Not delivered',
+  wrongmosque: 'Wrong mosque', otherdelivery: 'Other delivery problem' };
+
+let me = null, role = null, orders = [], requests = [], tab = 'prepare';
+// Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
+// audit-log events, and staff names for "who did it".
+let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null;
+
+const TABS = [
+  { id: 'overview', label: 'Overview', ops: true, tower: true, count: () => attention().length },
+  { id: 'activity', label: 'Activity', ops: true, tower: true, count: () => events.filter((e) => ymd(e.at) === today()).length },
+  { id: 'find', label: 'Find an order', ops: true, tower: true },
+  { id: 'prepare', label: 'To prepare', match: (o) => o.status === 'confirmed' },
+  { id: 'preparing', label: 'Preparing', match: (o) => o.status === 'preparing' },
+  { id: 'out', label: 'Out for delivery', match: (o) => o.status === 'outForDelivery' || o.status === 'retrying' },
+  { id: 'decide', label: 'Needs a decision', ops: true,
+    match: (o) => o.status === 'cancellationRequested' || one(o.problem_reports)?.state === 'review' },
+  { id: 'refunds', label: 'Refunds', ops: true, match: (o) => [2, 3].includes(one(o.refunds)?.stage) },
+  { id: 'done', label: 'Delivered (7 days)',
+    match: (o) => o.status === 'delivered' && Date.now() - new Date(o.delivered_at) < 7 * 864e5 },
+  { id: 'requests', label: 'Mosque requests', ops: true },
+];
+const one = (v) => Array.isArray(v) ? v[0] : v;
+const isOps = () => role === 'admin' || role === 'ops';
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 3500);
+}
+
+async function load() {
+  const { data, error } = await db.from('orders')
+    .select('id, number, status, pay_method, total_fils, placed_at, est_delivery, delivered_at, attempt_at, cancelled_from, ' +
+      'mosques(en, ar, area, lat, lng), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
+      'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference), ' +
+      'problem_reports(reason, wants_refund, note, photos, at, state)')
+    .not('status', 'in', '(paymentPending,paymentFailed)')
+    .order('est_delivery').order('placed_at');
+  if (error) return toast(error.message);
+  orders = data;
+  if (isOps()) {
+    const [r] = await Promise.all([
+      db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
+      loadTower(),
+    ]);
+    requests = r.data ?? [];
+  }
+  render();
+  if (openId && $('detail').open) openOrder(openId);
+}
+
+async function loadTower() {
+  const since = new Date(Date.now() - 30 * 864e5).toISOString();
+  const [o, e, s] = await Promise.all([
+    db.from('orders')
+      .select('id, number, status, pay_method, total_fils, placed_at, paid_at, est_delivery, delivered_at, ' +
+        'mosques(en, area), customers(name, phone), refunds(amount_fils, stage, sent_at)')
+      .gte('placed_at', since).order('placed_at', { ascending: false }).limit(2000),
+    db.from('order_events')
+      .select('id, order_id, actor, actor_kind, event, to_status, detail, at, orders(number, mosques(en), customers(name, phone))')
+      .order('at', { ascending: false }).limit(150),
+    db.from('staff').select('user_id, name'),
+  ]);
+  for (const res of [o, e, s]) if (res.error) toast(res.error.message);
+  recent = o.data ?? [];
+  events = e.data ?? [];
+  staffNames = Object.fromEntries((s.data ?? []).map((x) => [x.user_id, x.name]));
+}
+
+function render() {
+  const visible = TABS.filter((t) => !t.ops || isOps());
+  if (!visible.find((t) => t.id === tab)) tab = visible[0].id;
+  $('tabs').innerHTML = visible.map((t) => {
+    const n = t.count ? t.count() : t.id === 'requests' ? requests.length : t.match ? orders.filter(t.match).length : null;
+    return `<button class="tab" role="tab" aria-selected="${t.id === tab}" data-tab="${t.id}">${t.label}${n === null ? '' : `<span class="n">${n}</span>`}</button>`;
+  }).join('');
+  const current = TABS.find((t) => t.id === tab);
+  $('list').className = current.tower ? '' : 'grid';
+  if (tab === 'overview') return renderOverview();
+  if (tab === 'activity') return renderActivity();
+  if (tab === 'find') return renderFind();
+  if (tab === 'requests') {
+    $('list').innerHTML = requests.length ? requests.map(requestCard).join('') : '<div class="empty">No new mosque requests.</div>';
+    return;
+  }
+  const list = orders.filter(current.match);
+  $('list').innerHTML = list.length ? list.map(orderCard).join('') : '<div class="empty">Nothing here right now.</div>';
+  list.forEach(loadProblemPhotos);
+}
+
+function orderCard(o) {
+  const m = o.mosques ?? {}, c = o.customers ?? {}, r = one(o.refunds), p = one(o.problem_reports);
+  const map = m.lat ? `<a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : '';
+  const chip = {
+    confirmed: '<span class="chip">Confirmed</span>', preparing: '<span class="chip">Preparing</span>',
+    outForDelivery: '<span class="chip warn">Out for delivery</span>', retrying: '<span class="chip warn">Try again</span>',
+    delivered: '<span class="chip good">Delivered</span>', cancellationRequested: '<span class="chip bad">Cancellation requested</span>',
+    cancelled: '<span class="chip">Cancelled</span>' }[o.status] ?? '';
+  const a = [];
+  if (o.status === 'confirmed') a.push(btn('Start preparing', 'advance', o.id, 'preparing'));
+  if (o.status === 'preparing' || o.status === 'retrying') a.push(btn('Send out for delivery', 'advance', o.id, 'outForDelivery'));
+  if (o.status === 'outForDelivery' || o.status === 'retrying') {
+    a.push(btn('Delivered (take photo)', 'deliver', o.id, '', 'accent'));
+    a.push(btn('Could not deliver', 'fail', o.id, '', 'danger'));
+  }
+  if (isOps() && o.status === 'cancellationRequested') {
+    a.push(btn('Accept cancellation', 'cancel', o.id, 'yes', 'accent'));
+    a.push(btn('Decline', 'cancel', o.id, 'no', 'ghost'));
+  }
+  if (isOps() && p?.state === 'review') {
+    a.push(btn(p.wants_refund ? 'Approve refund' : 'Approve replacement', 'problem', o.id, 'yes', 'accent'));
+    a.push(btn('Reject report', 'problem', o.id, 'no', 'danger'));
+  }
+  if (isOps() && r?.stage === 2) a.push(btn(`Send refund ${bhd(r.amount_fils)}`, 'refund', o.id, '', 'accent'));
+  if (isOps() && r?.stage === 3) a.push(btn('Refund received by customer', 'received', o.id, '', 'ghost'));
+  if (isOps()) a.push(`<button class="btn ghost" data-order="${o.id}">History</button>`);
+
+  return `<article class="card">
+    <div class="row"><span class="num">#SAQI${o.number}</span>${chip}</div>
+    <div class="mosque">${esc(m.en)} <span class="sub">· ${esc(m.area)}</span> ${map}</div>
+    <div class="sub" dir="rtl" style="text-align:left">${esc(m.ar)}</div>
+    <ul class="lines">${(o.order_lines ?? []).map((l) =>
+      `<li><span>${l.cartons} ${l.cartons === 1 ? 'carton' : 'cartons'} · ${PRODUCT[l.product_id] ?? l.product_id}</span><span>${bhd(l.cartons * l.unit_price_fils)}</span></li>`).join('')}
+      <li><b>Total</b><b>${bhd(o.total_fils)}</b></li></ul>
+    <div class="sub">Estimated delivery <b>${day(o.est_delivery)}</b> · ${PAY[o.pay_method] ?? o.pay_method}</div>
+    <div class="sub">Customer ${esc(c.name || '')} ${c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : '(account deleted)'}</div>
+    ${o.attempt_at ? `<div class="sub">Last failed attempt ${time(o.attempt_at)}</div>` : ''}
+    ${p ? `<div class="box"><b>Problem:</b> ${REASON[p.reason] ?? p.reason} · wants ${p.wants_refund ? 'a refund' : 'a replacement'}
+          · ${esc(p.state)}${p.note ? `<br>“${esc(p.note)}”` : ''}<div class="photos" id="ph-${o.id}"></div></div>` : ''}
+    ${r ? `<div class="box"><b>Refund${r.credit_note_no ? ' ' + esc(r.credit_note_no) : ''}:</b> paid ${bhd(r.paid_fils)}
+          ${r.handling_fee_fils + r.processing_fee_fils ? `− fees ${bhd(r.handling_fee_fils + r.processing_fee_fils)}` : '(no deductions)'}
+          = <b>${bhd(r.amount_fils)}</b> · stage ${['', 'requested', 'accepted', 'sent', 'received'][r.stage]}
+          ${r.mf_refund_reference ? `· ref ${esc(r.mf_refund_reference)}` : ''}</div>` : ''}
+    <div class="actions">${a.join('')}</div>
+  </article>`;
+}
+
+function requestCard(r) {
+  return `<article class="card">
+    <div class="mosque">${esc(r.name)}</div>
+    <div class="sub">${esc(r.area)} · ${time(r.created_at)}</div>
+    ${r.map_link ? `<div><a href="${esc(r.map_link)}" target="_blank" rel="noopener">Map link</a></div>` : ''}
+    ${r.notes ? `<div class="box">${esc(r.notes)}</div>` : ''}
+    <div class="actions">${btn('Mark added', 'request', r.id, 'added', 'accent')}${btn('Reject', 'request', r.id, 'rejected', 'ghost')}</div>
+  </article>`;
+}
+
+// ---------------------------------------------------------------- control tower
+
+const STATUS = {
+  paymentPending: ['Awaiting payment', 'warn'], paymentFailed: ['Payment failed', 'bad'], confirmed: ['Confirmed', ''],
+  preparing: ['Preparing', ''], outForDelivery: ['Out for delivery', 'warn'], retrying: ['Try again', 'warn'],
+  delivered: ['Delivered', 'good'], cancellationRequested: ['Cancellation requested', 'bad'], cancelled: ['Cancelled', ''],
+};
+const statusChip = (s) => { const [label, cls] = STATUS[s] ?? [s, '']; return `<span class="chip ${cls}">${esc(label)}</span>`; };
+const ON_THE_WAY = ['confirmed', 'preparing', 'outForDelivery', 'retrying'];
+const UNPAID_AFTER = 30 * 60e3; // an order still awaiting payment after 30 minutes needs a look
+
+function lateDeliveries() {
+  const t = today();
+  return orders.filter((o) => ON_THE_WAY.includes(o.status) && o.est_delivery < t);
+}
+function stuckPayments() {
+  return recent.filter((o) => o.status === 'paymentPending' && Date.now() - new Date(o.placed_at) > UNPAID_AFTER);
+}
+const attention = () => [...lateDeliveries(), ...stuckPayments()];
+
+function eventText(e) {
+  const d = e.detail ?? {};
+  switch (e.event) {
+    case 'order_placed': return 'Placed an order, waiting for payment';
+    case 'payment_confirmed': return 'Payment confirmed';
+    case 'payment_failed': return 'Payment failed or was abandoned' + (d.error ? ` (${String(d.error).slice(0, 120)})` : '');
+    case 'amount_mismatch': return `Paid amount did not match: ${bhd(d.paid)} paid, ${bhd(d.expected)} expected`;
+    case 'status_changed': return 'Moved to ' + (STATUS[e.to_status]?.[0] ?? e.to_status);
+    case 'delivered': return 'Delivered, photo taken';
+    case 'delivery_failed': return 'Could not deliver' + (d.note ? `: “${d.note}”` : '');
+    case 'cancellation_requested': return 'Asked to cancel';
+    case 'cancellation_accepted': return 'Accepted the cancellation';
+    case 'cancellation_declined': return 'Declined the cancellation';
+    case 'problem_reported': return `Reported a problem: ${REASON[d.reason] ?? d.reason ?? ''}` +
+      (d.wants_refund === undefined ? '' : d.wants_refund ? ', wants a refund' : ', wants a replacement');
+    case 'problem_rejected': return 'Rejected the problem report';
+    case 'problem_refund_approved': return 'Approved a refund for the problem';
+    case 'replacement_approved': return 'Approved a free replacement';
+    case 'refund_sent': return 'Refund sent through MyFatoorah' + (d.reference ? ` · ref ${d.reference}` : '');
+    case 'refund_received': return 'Customer confirmed the refund arrived';
+    default: return String(e.event).replace(/_/g, ' ');
+  }
+}
+
+function actorName(e, customer) {
+  if (e.actor_kind === 'gateway') return 'MyFatoorah';
+  if (e.actor_kind === 'system') return 'System';
+  if (e.actor_kind === 'staff') return staffNames[e.actor] ?? 'Staff';
+  return customer?.name || customer?.phone || 'Customer';
+}
+
+const orderRow = (o, note = '') => `<div class="item" data-order="${o.id}">
+  <span class="t">${time(o.placed_at)}</span>
+  <span><span class="what">#SAQI${o.number}</span> ${statusChip(o.status)}<br>
+    <span class="sub">${esc(o.mosques?.en ?? '')} · ${esc(o.customers?.name || o.customers?.phone || 'account deleted')}${note ? ' · ' + note : ''}</span></span>
+  <span class="r">${bhd(o.total_fils)}</span></div>`;
+
+const eventRow = (e) => `<div class="item" data-order="${e.order_id}">
+  <span class="t" title="${esc(time(e.at))}">${esc(ago(e.at))}</span>
+  <span><span class="what">${esc(eventText(e))}</span><br>
+    <span class="sub">#SAQI${e.orders?.number ?? ''} · ${esc(e.orders?.mosques?.en ?? '')}</span></span>
+  <span class="r">${esc(actorName(e, e.orders?.customers))}</span></div>`;
+
+const panel = (rows, empty) => `<div class="panel">${rows.length ? rows.join('') : `<div class="empty">${empty}</div>`}</div>`;
+const kpi = (label, value, sub, opts = {}) =>
+  `<${opts.goto ? `button type="button" data-goto="${opts.goto}"` : 'div'} class="kpi ${opts.cls ?? ''}">
+    <div class="sub">${label}</div><div class="v">${value}</div><div class="sub">${sub}</div></${opts.goto ? 'button' : 'div'}>`;
+
+function renderOverview() {
+  const t = today();
+  const paidToday = recent.filter((o) => o.paid_at && ymd(o.paid_at) === t);
+  const dueToday = orders.filter((o) => ON_THE_WAY.includes(o.status) && o.est_delivery === t);
+  const deliveredToday = orders.filter((o) => o.delivered_at && ymd(o.delivered_at) === t);
+  const late = lateDeliveries(), stuck = stuckPayments();
+  const decide = orders.filter(TABS.find((x) => x.id === 'decide').match).length;
+  const refundsToSend = orders.filter((o) => one(o.refunds)?.stage === 2);
+  const failedWeek = recent.filter((o) => o.status === 'paymentFailed' && Date.now() - new Date(o.placed_at) < 7 * 864e5);
+  const sum = (list) => list.reduce((n, o) => n + o.total_fils, 0);
+
+  // Payments received per day, last 7 days (Bahrain time).
+  const days = [...Array(7)].map((_, i) => ymd(Date.now() - (6 - i) * 864e5));
+  const perDay = days.map((d) => sum(recent.filter((o) => o.paid_at && ymd(o.paid_at) === d)));
+  const max = Math.max(...perDay, 1);
+  const weekday = (d) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
+
+  $('list').innerHTML = `
+    <div class="kpis">
+      ${kpi('Paid today', bhd(sum(paidToday)), `${paidToday.length} ${paidToday.length === 1 ? 'order' : 'orders'}`)}
+      ${kpi('Deliveries due today', dueToday.length, 'not delivered yet', { goto: 'prepare' })}
+      ${kpi('Late deliveries', late.length, 'past the estimated day', { cls: late.length ? 'bad' : '' })}
+      ${kpi('Delivered today', deliveredToday.length, 'with photo', { goto: 'done' })}
+      ${kpi('Needs a decision', decide, 'cancellations and problems', { goto: 'decide', cls: decide ? 'warn' : '' })}
+      ${kpi('Refunds to send', refundsToSend.length, refundsToSend.length ? bhd(refundsToSend.reduce((n, o) => n + one(o.refunds).amount_fils, 0)) : 'none waiting', { goto: 'refunds', cls: refundsToSend.length ? 'warn' : '' })}
+      ${kpi('Unpaid after 30 min', stuck.length, 'payment not finished', { cls: stuck.length ? 'warn' : '' })}
+      ${kpi('Mosque requests', requests.length, 'new', { goto: 'requests' })}
+    </div>
+    <div class="section"><span>Payments received, last 7 days</span><span>${bhd(perDay.reduce((a, b) => a + b, 0))}</span></div>
+    <div class="panel">
+      <div class="bars">${perDay.map((v, i) => `<div class="bar" style="height:${Math.round(v / max * 100)}%" title="${days[i]}: ${bhd(v)}"></div>`).join('')}</div>
+      <div class="barlabels">${perDay.map((v, i) => `<span>${weekday(days[i])}<b>${(v / 1000).toFixed(v % 1000 ? 3 : 0)}</b></span>`).join('')}</div>
+    </div>
+    ${late.length ? `<div class="section"><span>Late deliveries</span></div>
+      ${panel(late.map((o) => orderRow(o, `due ${day(o.est_delivery)}`)), '')}` : ''}
+    <div class="section"><span>Unfinished payments</span></div>
+    ${panel([...stuck.map((o) => orderRow(o, 'still awaiting payment')), ...failedWeek.slice(0, 10).map((o) => orderRow(o))],
+      'No unfinished payments in the last 7 days.')}
+    <div class="section"><span>Latest activity</span><a data-goto="activity">See all</a></div>
+    ${panel(events.slice(0, 8).map(eventRow), 'No activity yet.')}`;
+}
+
+const FEED = [
+  { id: 'all', label: 'Everything', match: () => true },
+  { id: 'customer', label: 'Customers', match: (e) => e.actor_kind === 'customer' },
+  { id: 'staff', label: 'Staff and drivers', match: (e) => e.actor_kind === 'staff' },
+  { id: 'gateway', label: 'Payments', match: (e) => e.actor_kind === 'gateway' },
+];
+
+function renderActivity() {
+  const f = FEED.find((x) => x.id === feedFilter) ?? FEED[0];
+  const list = events.filter(f.match);
+  $('list').innerHTML = `
+    <div class="filters">${FEED.map((x) =>
+      `<button class="tab" type="button" aria-selected="${x.id === f.id}" data-feed="${x.id}">${x.label}</button>`).join('')}</div>
+    ${panel(list.map(eventRow), 'Nothing here yet.')}
+    <p class="sub">The latest ${events.length} events, updated live. Tap one to see the order's full history.</p>`;
+}
+
+function renderFind() {
+  if (!$('findForm')) {
+    $('list').innerHTML = `
+      <form class="search" id="findForm" role="search">
+        <input id="q" type="search" placeholder="Order number, customer phone or name, or mosque" autocomplete="off">
+        <button class="btn accent" type="submit">Search</button>
+      </form>
+      <div id="results"></div>`;
+    $('q').value = query;
+  }
+  $('results').innerHTML = found === null
+    ? '<p class="sub">For example 1024, SAQI1024, 3300 0000, a customer name, or Al-Noor.</p>'
+    : panel(found.map((o) => orderRow(o)), 'No orders match.');
+}
+
+async function search(q) {
+  query = q.trim();
+  if (!query) { found = null; return render(); }
+  const sel = 'id, number, status, total_fils, placed_at, mosques(en, area), customers(name, phone)';
+  const term = query.replace(/["*,()\\]/g, ' ').trim();
+  const like = `"*${term.replace(/\s+/g, '*')}*"`;
+  const num = query.replace(/^#?\s*saqi\s*/i, '');
+  const jobs = [
+    db.from('orders').select(sel.replace('customers(', 'customers!inner('))
+      .or(`phone.ilike.${like},name.ilike.${like}`, { referencedTable: 'customers' })
+      .order('placed_at', { ascending: false }).limit(30),
+    db.from('orders').select(sel.replace('mosques(', 'mosques!inner('))
+      .or(`en.ilike.${like},ar.ilike.${like},area.ilike.${like}`, { referencedTable: 'mosques' })
+      .order('placed_at', { ascending: false }).limit(30),
+  ];
+  if (/^\d{1,9}$/.test(num)) jobs.push(db.from('orders').select(sel).eq('number', Number(num)));
+  const results = await Promise.all(jobs);
+  const err = results.find((r) => r.error);
+  if (err) toast(err.error.message);
+  const byId = new Map();
+  results.flatMap((r) => r.data ?? []).forEach((o) => byId.set(o.id, o));
+  found = [...byId.values()].sort((a, b) => (String(a.number) === num ? -1 : String(b.number) === num ? 1 : 0) ||
+    new Date(b.placed_at) - new Date(a.placed_at));
+  render();
+}
+
+async function openOrder(id) {
+  openId = id;
+  const [o, ev] = await Promise.all([
+    db.from('orders').select('*, mosques(en, ar, area, lat, lng), customers(name, phone, email), ' +
+      'order_lines(product_id, cartons, unit_price_fils), refunds(*), problem_reports(*)').eq('id', id).single(),
+    db.from('order_events').select('*').eq('order_id', id).order('at'),
+  ]);
+  if (o.error) return toast(o.error.message);
+  const x = o.data, m = x.mosques ?? {}, c = x.customers ?? {}, r = one(x.refunds), p = one(x.problem_reports);
+  let photo = '';
+  if (x.delivery_photo) {
+    const s = await db.storage.from('delivery-photos').createSignedUrl(x.delivery_photo, 600);
+    if (s.data?.signedUrl) photo = `<a href="${s.data.signedUrl}" target="_blank" rel="noopener"><img class="delivery-photo" src="${s.data.signedUrl}" alt="Delivery photo"></a>`;
+  }
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+  $('detailTitle').innerHTML = `#SAQI${x.number} ${statusChip(x.status)}`;
+  $('detailBody').innerHTML = `
+    <dl class="kv">
+      ${row('Mosque', `${esc(m.en)} · ${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}`)}
+      ${row('Customer', c.phone ? `${esc(c.name || '')} <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>${c.email ? ' · ' + esc(c.email) : ''}` : 'Account deleted')}
+      ${row('Total', `<b>${bhd(x.total_fils)}</b> · ${PAY[x.pay_method] ?? esc(x.pay_method)}`)}
+      ${row('Placed', time(x.placed_at))}
+      ${row('Paid', time(x.paid_at))}
+      ${row('Estimated delivery', day(x.est_delivery))}
+      ${row('Delivered', time(x.delivered_at))}
+      ${row('Invoice', esc(x.invoice_no))}
+      ${row('MyFatoorah invoice', esc(x.mf_invoice_id))}
+      ${row('MyFatoorah payment', esc(x.mf_payment_id))}
+      ${r ? row('Refund', `${bhd(r.amount_fils)} · ${['', 'requested', 'accepted', 'sent', 'received'][r.stage]}${r.credit_note_no ? ' · ' + esc(r.credit_note_no) : ''}${r.mf_refund_reference ? ' · ref ' + esc(r.mf_refund_reference) : ''}`) : ''}
+      ${p ? row('Problem', `${REASON[p.reason] ?? esc(p.reason)} · ${esc(p.state)}${p.note ? ` · “${esc(p.note)}”` : ''}`) : ''}
+    </dl>
+    <ul class="lines">${(x.order_lines ?? []).map((l) =>
+      `<li><span>${l.cartons} ${l.cartons === 1 ? 'carton' : 'cartons'} · ${PRODUCT[l.product_id] ?? esc(l.product_id)}</span><span>${bhd(l.cartons * l.unit_price_fils)}</span></li>`).join('')}</ul>
+    ${photo}
+    <div class="section"><span>History</span></div>
+    <ol class="timeline">${(ev.data ?? []).map((e) => `<li>
+      <div><b>${esc(eventText(e))}</b></div>
+      <div class="sub">${esc(time(e.at))} · ${esc(actorName(e, c))}</div></li>`).join('') || '<li class="sub">No events recorded.</li>'}</ol>`;
+  if (!$('detail').open) $('detail').showModal();
+}
+
+$('detailClose').addEventListener('click', () => $('detail').close());
+$('detail').addEventListener('close', () => { openId = null; });
+
+const btn = (label, act, id, arg = '', cls = '') =>
+  `<button class="btn ${cls}" data-act="${act}" data-id="${id}" data-arg="${arg}">${esc(label)}</button>`;
+
+async function loadProblemPhotos(o) {
+  const p = one(o.problem_reports);
+  if (!p?.photos?.length) return;
+  const { data } = await db.storage.from('problem-photos').createSignedUrls(p.photos, 600);
+  const el = $('ph-' + o.id);
+  if (el && data) el.innerHTML = data.filter((d) => d.signedUrl)
+    .map((d) => `<a href="${d.signedUrl}" target="_blank" rel="noopener"><img src="${d.signedUrl}" alt="Problem photo"></a>`).join('');
+}
+
+async function rpc(fn, params, okMsg) {
+  const { error } = await db.rpc(fn, params);
+  if (error) { toast(error.message); return false; }
+  toast(okMsg); await load(); return true;
+}
+
+function takePhoto() {
+  return new Promise((resolve) => {
+    const input = $('photoInput'); input.value = '';
+    input.onchange = () => resolve(input.files[0] ?? null);
+    input.click();
+  });
+}
+
+$('list').addEventListener('submit', (e) => {
+  if (e.target.id !== 'findForm') return;
+  e.preventDefault();
+  search($('q').value);
+});
+
+$('list').addEventListener('click', async (e) => {
+  const go = e.target.closest('[data-goto]');
+  if (go) { setTab(go.dataset.goto); return; }
+  const feed = e.target.closest('[data-feed]');
+  if (feed) { feedFilter = feed.dataset.feed; render(); return; }
+  const b = e.target.closest('button[data-act]');
+  if (!b) {
+    const row = e.target.closest('[data-order]');
+    if (row) openOrder(row.dataset.order);
+    return;
+  }
+  const { act, id, arg } = b.dataset;
+  b.disabled = true;
+  try {
+    if (act === 'advance') await rpc('ops_advance', { p_order: id, p_to: arg }, 'Updated');
+    if (act === 'fail') {
+      const note = prompt('What happened? (for example: mosque closed)') ?? '';
+      await rpc('ops_fail_attempt', { p_order: id, p_note: note }, 'Marked: try again on the next delivery day');
+    }
+    if (act === 'deliver') {
+      const file = await takePhoto();
+      if (!file) return;
+      const path = `${id}/${Date.now()}.${(file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg')}`;
+      const up = await db.storage.from('delivery-photos').upload(path, file, { contentType: file.type || 'image/jpeg' });
+      if (up.error) return toast(up.error.message);
+      await rpc('ops_mark_delivered', { p_order: id, p_photo: path }, 'Delivered, photo sent to the customer');
+    }
+    if (act === 'cancel') {
+      if (arg === 'yes' && !confirm('Accept the cancellation? A credit note is issued and the refund is queued.')) return;
+      await rpc('ops_decide_cancellation', { p_order: id, p_accept: arg === 'yes' }, arg === 'yes' ? 'Cancellation accepted' : 'Cancellation declined');
+    }
+    if (act === 'problem') {
+      if (arg === 'no' && !confirm('Reject this report? The customer will be told it was not approved.')) return;
+      await rpc('ops_decide_problem', { p_order: id, p_approve: arg === 'yes' }, arg === 'yes' ? 'Approved' : 'Rejected');
+    }
+    if (act === 'refund') {
+      if (!confirm('Send this refund to the customer through MyFatoorah now?')) return;
+      const { data, error } = await db.functions.invoke('refunds-send', { body: { order_id: id } });
+      if (error) {
+        let msg = error.message;
+        try { msg = (await error.context.json()).message || (await error.context.json()).error || msg; } catch (_) {}
+        return toast('Refund not sent: ' + msg);
+      }
+      toast('Refund sent · ref ' + (data.reference ?? '')); await load();
+    }
+    if (act === 'received') await rpc('ops_refund_received', { p_order: id }, 'Refund marked as received');
+    if (act === 'request') {
+      const { error } = await db.from('mosque_requests').update({ status: arg }).eq('id', id);
+      if (error) toast(error.message); else { toast('Saved'); await load(); }
+    }
+  } finally { b.disabled = false; }
+});
+
+$('tabs').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]'); if (!t) return;
+  setTab(t.dataset.tab);
+});
+function setTab(id) {
+  tab = id;
+  try { localStorage.setItem('saqi.ops.tab', tab); } catch (_) {}
+  render();
+  window.scrollTo(0, 0);
+}
+
+$('login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('loginErr').textContent = '';
+  const { error } = await db.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
+  if (error) $('loginErr').textContent = error.message;
+});
+$('signout').addEventListener('click', () => db.auth.signOut());
+
+let channel = null;
+async function start(session) {
+  if (!session) {
+    me = role = null; $('app').hidden = true; $('login').hidden = false;
+    if (channel) { db.removeChannel(channel); channel = null; }
+    return;
+  }
+  const { data: staff } = await db.from('staff').select('role, name').eq('user_id', session.user.id).maybeSingle();
+  if (!staff) {
+    $('loginErr').textContent = 'This account is not on the Saqi staff list.';
+    await db.auth.signOut(); return;
+  }
+  me = session.user; role = staff.role;
+  $('who').textContent = `${staff.name} · ${staff.role}`;
+  $('login').hidden = true; $('app').hidden = false;
+  tab = isOps() ? 'overview' : 'prepare';
+  try { tab = localStorage.getItem('saqi.ops.tab') || tab; } catch (_) {}
+  await load();
+  if (!channel) {
+    // Every audit event comes with a change to one of these tables, so the activity feed
+    // refreshes with them. Bursts (an order and its refund changing together) load once.
+    const reload = () => { clearTimeout(reload.h); reload.h = setTimeout(load, 400); };
+    channel = db.channel('ops');
+    ['orders', 'refunds', 'problem_reports'].forEach((table) =>
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, reload));
+    channel.subscribe();
+  }
+}
+db.auth.onAuthStateChange((_event, session) => { setTimeout(() => start(session), 0); });
+</script>
+</body>
+</html>
