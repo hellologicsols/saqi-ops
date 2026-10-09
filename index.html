@@ -432,7 +432,7 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], products = [], mosques = [], mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
+let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], fbFilter = 'all', products = [], mosques = [], mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
 let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
@@ -458,6 +458,9 @@ const TABS = [
     match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet confirmed by the customer' },
   { id: 'requests', group: 'Customer care', label: 'Mosque requests', icon: 'pin', ops: true,
     count: () => requests.length, sub: () => 'Mosques customers asked us to add' },
+  { id: 'feedback', group: 'Customer care', label: 'Feedback', icon: 'msg', ops: true,
+    count: () => feedback.filter(isNewFeedback).length || null,
+    sub: () => 'What customers like, don’t like and want added. Sent from the app (build 17 and later).' },
   { id: 'mosques', group: 'Catalogue', label: 'Mosques', icon: 'pin', ops: true,
     count: () => mosques.filter((m) => !m.served && m.active).length || null, tone: 'hot',
     sub: () => 'Add mosques, put them on hold or remove them. The app picks changes up when it opens (build 10 and later).' },
@@ -480,13 +483,17 @@ async function load() {
   if (error) return toast(error.message);
   orders = data;
   if (isOps()) {
-    const [r, p] = await Promise.all([
+    const [r, p, f] = await Promise.all([
       db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
       db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils)')
         .order('sort'),
+      db.from('feedback').select('id, rating, liked, disliked, wish, can_contact, source, app_version, language, created_at, ' +
+        'order_id, customers(name, phone), orders(number)').order('created_at', { ascending: false }).limit(500),
       loadTower(),
       loadMosques(),
     ]);
+    if (f.error) toast(f.error.message);
+    feedback = f.data ?? [];
     requests = r.data ?? [];
     products = p.data ?? [];
   }
@@ -538,6 +545,7 @@ function render() {
   if (tab === 'deliveries') return renderDeliveries();
   if (tab === 'products') return renderProducts();
   if (tab === 'mosques') return renderMosques();
+  if (tab === 'feedback') return renderFeedback();
   if (tab === 'requests') {
     $('list').innerHTML = requests.length ? `<div class="grid">${requests.map(requestCard).join('')}</div>`
       : '<div class="card empty">No new mosque requests.</div>';
@@ -626,6 +634,53 @@ async function loadProblemPhotos(o) {
   const el = $('ph-' + o.id);
   if (el && data) el.innerHTML = data.filter((d) => d.signedUrl)
     .map((d) => `<a href="${d.signedUrl}" target="_blank" rel="noopener"><img src="${d.signedUrl}" alt="Problem photo"></a>`).join('');
+}
+
+// ---------------------------------------------------------------- feedback
+const RATING = ['', 'Very poor', 'Poor', 'Okay', 'Good', 'Great'];
+const isNewFeedback = (f) => Date.now() - new Date(f.created_at) < 7 * 864e5;
+const FBFILTERS = [
+  { id: 'all', label: 'All', match: () => true },
+  { id: 'low', label: 'Unhappy (1–2)', match: (f) => f.rating && f.rating <= 2 },
+  { id: 'okay', label: 'Okay (3)', match: (f) => f.rating === 3 },
+  { id: 'good', label: 'Happy (4–5)', match: (f) => f.rating >= 4 },
+  { id: 'wish', label: 'Wishes', match: (f) => !!f.wish },
+  { id: 'contact', label: 'Happy to be contacted', match: (f) => f.can_contact },
+];
+
+function feedbackCard(f) {
+  const c = one(f.customers), o = one(f.orders);
+  const tone = !f.rating ? '' : f.rating <= 2 ? 'bad' : f.rating === 3 ? 'warn' : 'good';
+  const phone = c?.phone ?? '';
+  const answer = (label, text) => text ? `<div class="sub" style="font-weight:600;margin-top:4px">${label}</div><div class="box">${esc(text)}</div>` : '';
+  const who = !c ? 'Account deleted' : esc(c.name || 'No name');
+  const contact = f.can_contact && phone
+    ? `<a href="tel:${esc(phone)}">${esc(phone)}</a> · <a href="https://wa.me/${esc(phone.replace(/\D/g, ''))}" target="_blank" rel="noopener">WhatsApp</a>`
+    : 'Didn’t ask to be contacted';
+  return `<article class="card ocard">
+    <div class="head"><span>${f.rating ? `<span class="chip ${tone}">${f.rating} · ${RATING[f.rating]}</span>` : '<span class="chip">No rating</span>'}</span>
+      <span class="sub">${time(f.created_at)}</span></div>
+    ${answer('Likes', f.liked)}${answer('Doesn’t like', f.disliked)}${answer('Would like added', f.wish)}
+    <div class="sub" style="margin-top:6px">${who} · ${contact}</div>
+    <div class="sub">${f.source === 'after_delivery' ? 'After a delivery' : 'From Profile'} · ${f.language === 'ar' ? 'Arabic' : 'English'} · app ${esc(f.app_version)}
+      ${o ? ` · <span class="num" data-order="${f.order_id}" style="cursor:pointer;color:var(--accent)">#SAQI${o.number}</span>` : ''}</div>
+  </article>`;
+}
+
+function renderFeedback() {
+  const fl = FBFILTERS.find((x) => x.id === fbFilter) ?? FBFILTERS[0];
+  const month = feedback.filter((f) => f.rating && Date.now() - new Date(f.created_at) < 30 * 864e5);
+  const avg = month.length ? (month.reduce((n, f) => n + f.rating, 0) / month.length).toFixed(1) : '–';
+  const list = feedback.filter(fl.match);
+  $('list').innerHTML = `
+    <div class="card" style="padding:14px 16px;display:flex;gap:18px;flex-wrap:wrap;align-items:baseline;margin-bottom:12px">
+      <span><b style="font-size:22px">${avg}</b> <span class="sub">average rating, last 30 days (${month.length} ratings)</span></span>
+      <span class="sub">${[5, 4, 3, 2, 1].map((r) => `${RATING[r]}: <b>${month.filter((f) => f.rating === r).length}</b>`).join(' · ')}</span>
+    </div>
+    <div class="seg" role="group" aria-label="Show">${FBFILTERS.map((x) =>
+      `<button type="button" aria-pressed="${x.id === fl.id}" data-fbfilter="${x.id}">${x.label} (${feedback.filter(x.match).length})</button>`).join('')}</div>
+    ${list.length ? `<div class="grid" style="margin-top:12px">${list.map(feedbackCard).join('')}</div>`
+      : '<div class="card empty" style="margin-top:12px">No feedback here yet.</div>'}`;
 }
 
 // ---------------------------------------------------------------- control tower
@@ -751,6 +806,7 @@ function renderOverview() {
         ${todo('card', 'Unpaid after 30 minutes', 'Check them with MyFatoorah', stuck.length, 'overview', 'warn')}
         ${todo('clock', 'Late deliveries', 'Past the estimated day', late.length, 'overview', 'bad')}
         ${todo('pin', 'Mosque requests', 'New requests from customers', requests.length, 'requests', 'warn')}
+        ${todo('msg', 'Feedback', 'From customers, last 7 days', feedback.filter(isNewFeedback).length, 'feedback', 'warn')}
       </div>
     </div>
     ${late.length ? `<div class="section"><h2>Late deliveries</h2></div>
@@ -1393,6 +1449,8 @@ document.addEventListener('click', (e) => {
   if (t.closest('[data-bulk]')) { bulkForm(); return; }
   if (t.closest('[data-addproduct]')) { productForm(); return; }
   if (t.closest('[data-addmosque]')) { mosqueForm(null); return; }
+  const ff = t.closest('[data-fbfilter]');
+  if (ff) { fbFilter = ff.dataset.fbfilter; renderFeedback(); return; }
   const mf = t.closest('[data-mfilter]');
   if (mf) { mosqueFilter = mf.dataset.mfilter; mosqueQuery = ''; if ($('mq')) $('mq').value = ''; renderMosqueRows(); return; }
   const st = t.closest('[data-stock]');
@@ -1460,7 +1518,7 @@ async function start(session) {
     // refreshes with them. Bursts (an order and its refund changing together) load once.
     const reload = () => { clearTimeout(reload.h); reload.h = setTimeout(load, 400); };
     channel = db.channel('ops');
-    ['orders', 'refunds', 'problem_reports', 'notifications'].forEach((table) =>
+    ['orders', 'refunds', 'problem_reports', 'notifications', 'feedback'].forEach((table) =>
       channel.on('postgres_changes', { event: '*', schema: 'public', table }, reload));
     channel.subscribe();
   }
