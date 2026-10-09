@@ -475,7 +475,7 @@ const countOf = (t) => t.count ? t.count() : t.match ? orders.filter(t.match).le
 async function load() {
   const { data, error } = await db.from('orders')
     .select('id, number, status, pay_method, total_fils, placed_at, est_delivery, delivered_at, attempt_at, cancelled_from, ' +
-      'customer_id, mosques(en, ar, area, lat, lng), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
+      'customer_id, mosques(en, ar, area, lat, lng, addr, block), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
       'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference), ' +
       'problem_reports(reason, wants_refund, note, photos, at, state)')
     .not('status', 'in', '(paymentPending,paymentFailed)')
@@ -598,6 +598,7 @@ function orderCard(o) {
     <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>${statusChip(o.status)}</div>
     <div class="mosque">${esc(m.en)} <span class="sub">· ${esc(m.area)}${map}</span></div>
     <div class="sub" dir="rtl" style="text-align:left">${esc(m.ar)}</div>
+    <div class="sub">${addressHtml(m)}</div>
     <ul class="lines">${(o.order_lines ?? []).map((l) =>
       `<li><span>${l.cartons} ${l.cartons === 1 ? 'carton' : 'cartons'} · ${PRODUCT[l.product_id] ?? esc(l.product_id)}</span><span>${bhd(l.cartons * l.unit_price_fils)}</span></li>`).join('')}
       <li><b>Total</b><b>${bhd(o.total_fils)}</b></li></ul>
@@ -634,6 +635,66 @@ async function loadProblemPhotos(o) {
   const el = $('ph-' + o.id);
   if (el && data) el.innerHTML = data.filter((d) => d.signedUrl)
     .map((d) => `<a href="${d.signedUrl}" target="_blank" rel="noopener"><img src="${d.signedUrl}" alt="Problem photo"></a>`).join('');
+}
+
+// ---------------------------------------------------------------- mosque addresses
+// The street address and block, for deliveries and the water company. Addresses come from the
+// Bahrain mosque directory; some lack a building number or road and are completed by staff.
+const mapUrl = (m) => `https://maps.google.com/?q=${m.lat},${m.lng}`;
+const fullAddress = (m) => {
+  const a = (m?.addr ?? '').trim();
+  const blockShown = m?.block && new RegExp(`\\b0*${m.block}\\b`).test(a);
+  return [a, m?.block && !blockShown ? `Block ${m.block}` : ''].filter(Boolean).join(', ');
+};
+// Same rule as docs/mosque-addresses-to-complete.csv: a building number and a road are needed.
+function addressGaps(m) {
+  const a = (m?.addr ?? '').trim();
+  if (!a) return ['whole address'];
+  const road = /\b(road|street|avenue|ave\.?|highway)\b/i.test(a);
+  const bld = !/^(road|block|street|avenue)/i.test(a) &&
+    /\b(building|bldg|no\.)\s*\d|^[A-Z]?\/?\d+[A-Z]?\b(?!\s*(?:road|street))|^\d+[A-Z]?\s+(road|street|[A-Z])/i.test(a);
+  return [...(bld ? [] : ['building number']), ...(road ? [] : ['road'])];
+}
+const addressHtml = (m) => {
+  const a = fullAddress(m);
+  const gaps = addressGaps(m);
+  return `${a ? esc(a) : '<span class="chip warn">No address</span>'}${a && gaps.length ? ` <span class="chip warn" title="Missing: ${gaps.join(', ')}">Incomplete</span>` : ''}`;
+};
+
+function addressForm(id) {
+  const m = mosques.find((x) => x.id === id);
+  ask({ title: `Address of ${m.en}`, ok: 'Save address', body: `
+      <div class="sub">${esc(m.area)} · <a href="${mapUrl(m)}" target="_blank" rel="noopener">Open the map pin</a>${addressGaps(m).length ? ` · missing: ${addressGaps(m).join(', ')}` : ''}</div>
+      <label>Address (building, road, area)<input name="addr" maxlength="200" value="${esc(m.addr ?? '')}" placeholder="Building 1031, Road 4230, A'ali"></label>
+      <label>Block<input name="block" inputmode="numeric" pattern="[0-9]*" value="${m.block ?? ''}" placeholder="742"></label>
+      <div class="sub">Used on deliveries and the list for the water company. The app shows customers its own copy until the next app update.</div>`,
+    submit: async (f) => {
+      const block = f.get('block').trim();
+      if (block && !/^\d{1,4}$/.test(block)) return 'The block is a number, like 742.';
+      const { error } = await db.rpc('ops_set_mosque_address', { p_mosque: id, p_addr: f.get('addr'), p_block: block ? +block : null });
+      if (error) return friendly(error.message);
+      toast('Address saved'); await load();
+    } });
+}
+
+// Everything still to send out, as text for the water company: order, mosque, address, block,
+// map pin and water. Copied to the clipboard, or shown to copy by hand.
+function waterCompanyList() {
+  const list = orders.filter(DCOLS[0].match)
+    .sort((a, b) => a.est_delivery.localeCompare(b.est_delivery) || String(a.mosques?.area).localeCompare(String(b.mosques?.area)));
+  if (!list.length) return toast('Nothing to send out right now.');
+  const text = list.map((o) => {
+    const m = o.mosques ?? {};
+    const water = (o.order_lines ?? []).map((l) => `${l.cartons} ${l.cartons === 1 ? 'carton' : 'cartons'} of ${PRODUCT[l.product_id] ?? l.product_id}`).join(', ');
+    return [`#SAQI${o.number} · due ${day(o.est_delivery)}`, `${m.en} (${m.ar})`, fullAddress(m) || 'Address not known', m.area, `Map: ${mapUrl(m)}`, `Water: ${water}`].join('\n');
+  }).join('\n\n');
+  ask({ title: `Deliveries for the water company (${list.length})`, ok: 'Copy', body: `
+      <div class="sub">Every order still to send out, with the mosque's address, block and map pin.</div>
+      <textarea name="list" rows="14" readonly style="width:100%;font:inherit;font-size:13px">${esc(text)}</textarea>`,
+    submit: async () => {
+      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it into your message to the water company.'); }
+      catch (_) { return 'Copying is blocked here. Select the text and copy it.'; }
+    } });
 }
 
 // ---------------------------------------------------------------- feedback
@@ -915,6 +976,7 @@ function deliveryCard(o) {
     <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>
       ${late ? '<span class="chip bad">Late</span>' : ''}${o.status === 'retrying' ? '<span class="chip warn">Try again</span>' : ''}</div>
     <div class="mosque">${esc(m.en)}</div>
+    <div class="sub">${addressHtml(m)}</div>
     <div class="sub">${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}</div>
     <div class="sub"><b>${cartons} ${cartons === 1 ? 'carton' : 'cartons'}</b> · ${(o.order_lines ?? []).map((l) => `${l.cartons} of ${PRODUCT[l.product_id] ?? esc(l.product_id)}`).join(', ')}</div>
     ${c.phone ? `<div class="sub">${esc(c.name || '')} <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a></div>` : ''}
@@ -949,7 +1011,7 @@ function renderDeliveries() {
       ${rows.length ? rows.join('') : '<div class="empty">Nothing here right now.</div>'}</section>`;
   };
   $('list').innerHTML = `
-    ${isOps() ? `<div class="toolbar"><button class="btn ghost" type="button" data-bulk>${icon('msg')}Message customers</button></div>` : ''}
+    <div class="toolbar"><button class="btn ghost" type="button" data-watercompany>${icon('truck')}List for the water company</button>${isOps() ? `<button class="btn ghost" type="button" data-bulk>${icon('msg')}Message customers</button>` : ''}</div>
     <div class="seg phone-only" role="group" aria-label="Column">${cols.map((c) =>
       `<button type="button" aria-pressed="${c.id === delCol}" data-dcol="${c.id}">${c.label} (${c.list.length})</button>`).join('')}</div>
     <div class="board">${cols.map(col).join('')}</div>`;
@@ -1066,7 +1128,7 @@ async function loadMosques() {
   const all = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await db.from('mosques')
-      .select('id, en, ar, area, gov, lat, lng, served, active, bundled, added_at').order('en').range(from, from + 999);
+      .select('id, en, ar, area, gov, lat, lng, served, active, bundled, added_at, addr, block').order('en').range(from, from + 999);
     if (error) { toast(error.message); break; }
     all.push(...data);
     if (data.length < 1000) break;
@@ -1080,16 +1142,19 @@ const MFILTERS = [
   { id: 'hold', label: 'On hold', match: (m) => m.active && !m.served },
   { id: 'removed', label: 'Removed', match: (m) => !m.active },
   { id: 'added', label: 'Added by staff', match: (m) => !m.bundled },
+  { id: 'address', label: 'Address to complete', match: (m) => m.active && addressGaps(m).length > 0 },
 ];
 
 function mosqueRow(m) {
   const chip = !m.active ? '<span class="chip">Removed</span>' : !m.served ? '<span class="chip warn">On hold</span>' : '<span class="chip good">Delivering</span>';
   const a = [];
+  a.push(btn('Edit address', 'address', m.id, '', 'ghost sm'));
   if (m.active) a.push(m.served ? btn('Put on hold', 'mosque', m.id, 'hold', 'ghost sm') : btn('Deliver again', 'mosque', m.id, 'serve', 'accent sm'));
   a.push(m.active ? btn('Remove', 'mosque', m.id, 'remove', 'danger sm') : btn('Restore', 'mosque', m.id, 'restore', 'ghost sm'));
   return `<div class="row" style="cursor:default"><span class="av">${icon('pin')}</span>
     <span><span class="what">${esc(m.en)}</span> ${chip}${!m.bundled ? ' <span class="chip info">Added</span>' : ''}
-      <div class="meta"><span dir="rtl">${esc(m.ar)}</span> · ${esc(m.area)} · ${esc(m.gov)} · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a></div></span>
+      <div class="meta"><span dir="rtl">${esc(m.ar)}</span> · ${esc(m.area)} · ${esc(m.gov)} · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a></div>
+      <div class="meta">${addressHtml(m)}</div></span>
     <span class="end"><div class="actions" style="justify-content:flex-end;margin:0">${a.join('')}</div></span></div>`;
 }
 
@@ -1097,7 +1162,7 @@ function renderMosques() {
   if (!$('mosqueSearch')) {
     $('list').innerHTML = `
       <div class="toolbar"><button class="btn accent" type="button" data-addmosque>Add a mosque</button></div>
-      <form class="search" id="mosqueSearch" role="search"><input id="mq" type="search" placeholder="Search by name in English or Arabic, or area" autocomplete="off" aria-label="Search mosques"></form>
+      <form class="search" id="mosqueSearch" role="search"><input id="mq" type="search" placeholder="Search by name, area, address, block or ID" autocomplete="off" aria-label="Search mosques"></form>
       <div id="mosqueFilters"></div><div id="mosqueRows"></div>`;
     $('mq').value = mosqueQuery;
     $('mq').addEventListener('input', () => { mosqueQuery = $('mq').value; renderMosqueRows(); });
@@ -1111,7 +1176,7 @@ function renderMosqueRows() {
     `<button type="button" aria-pressed="${x.id === f.id}" data-mfilter="${x.id}">${x.label} (${mosques.filter(x.match).length})</button>`).join('')}</div>`;
   const q = mosqueQuery.trim().toLowerCase();
   let list = mosques.filter(f.match);
-  if (q) list = mosques.filter((m) => `${m.en} ${m.ar} ${m.area}`.toLowerCase().includes(q));
+  if (q) list = mosques.filter((m) => `${m.en} ${m.ar} ${m.area} ${m.addr ?? ''} ${m.block ?? ''} ${m.id}`.toLowerCase().includes(q));
   $('mosqueRows').innerHTML = panel(list.slice(0, 100).map(mosqueRow), q ? 'No mosques match.' : 'Nothing here. Every mosque in the directory is being delivered to.')
     + (list.length > 100 ? `<p class="sub">Showing 100 of ${list.length}. Search to narrow it down.</p>` : '');
 }
@@ -1146,14 +1211,19 @@ function mosqueForm(request) {
         <label>Area<input name="area" required value="${esc(request?.area ?? '')}"></label>
         <label>Governorate<select name="gov" required>${govs.map((g) => `<option>${g}</option>`).join('')}</select></label>
       </div>
+      <label>Address (building, road)<input name="addr" maxlength="200" placeholder="Building 1031, Road 4230"></label>
+      <label>Block<input name="block" inputmode="numeric" pattern="[0-9]*" placeholder="742"></label>
       <label>Location (Google Maps link, or latitude, longitude)<input name="loc" required value="${esc(request?.map_link ?? '')}" placeholder="https://maps.google.com/… or 26.15, 50.62"></label>
       <label>Type<select name="type"><option>Masjid</option><option>Jamea</option></select></label>
       <div class="sub">It is added as delivering. Short links (maps.app.goo.gl) don't include the location: open them and copy the coordinates instead.</div>`,
     submit: async (f) => {
       const loc = parseLocation(f.get('loc'));
+      const block = f.get('block').trim();
+      if (block && !/^\d{1,4}$/.test(block)) return 'The block is a number, like 742.';
       if (!loc) return 'Paste a Google Maps link with the location in it, or coordinates like 26.15, 50.62.';
       const { error } = await db.rpc('ops_add_mosque', { p_en: f.get('en'), p_ar: f.get('ar'), p_area: f.get('area'), p_gov: f.get('gov'),
-        p_lat: loc[0], p_lng: loc[1], p_type: f.get('type'), p_request: request?.id ?? null });
+        p_lat: loc[0], p_lng: loc[1], p_type: f.get('type'), p_request: request?.id ?? null,
+        p_addr: f.get('addr'), p_block: block ? +block : null });
       if (error) return friendly(error.message);
       toast('Mosque added'); await load();
     } });
@@ -1214,7 +1284,7 @@ const NOTE_KIND = {
 async function openOrder(id) {
   openId = id;
   const [o, ev, nt] = await Promise.all([
-    db.from('orders').select('*, mosques(en, ar, area, lat, lng), customers(name, phone, email, locale), ' +
+    db.from('orders').select('*, mosques(en, ar, area, lat, lng, addr, block), customers(name, phone, email, locale), ' +
       'order_lines(product_id, cartons, unit_price_fils), refunds(*), problem_reports(*)').eq('id', id).single(),
     db.from('order_events').select('*').eq('order_id', id).order('at'),
     db.from('notifications').select('*').eq('order_id', id).order('created_at'),
@@ -1236,6 +1306,7 @@ async function openOrder(id) {
     ${actions.length ? `<div class="dactions">${actions.join('')}</div>` : ''}
     <div class="facts">
       ${fact('Mosque', `${esc(m.en)} · ${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}`, true)}
+      ${fact('Address', addressHtml(m), true)}
       ${fact('Customer', c.phone ? `${esc(c.name || 'No name')}<br><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>${c.email ? `<br><span class="sub">${esc(c.email)}</span>` : ''}<br><span class="sub">Uses Saqi in ${LANG[c.locale] ?? esc(c.locale)}</span>` : 'Account deleted')}
       ${fact('Total', `${bhd(x.total_fils)}<br><span class="sub">${PAY[x.pay_method] ?? esc(x.pay_method)}</span>`)}
       ${fact('Placed', time(x.placed_at))}
@@ -1418,6 +1489,7 @@ async function act(b) {
     if (act === 'remind') reminderForm(id);
     if (act === 'addmosque') mosqueForm(requests.find((r) => r.id === id));
     if (act === 'mosque') await setMosque(id, arg);
+    if (act === 'address') addressForm(id);
     if (act === 'product') await setProductActive(id, arg === 'on');
     if (act === 'message') messageForm(id, openId === id ? openLocale : null);
     if (act === 'staffcancel') cancelForm(id);
@@ -1447,6 +1519,7 @@ document.addEventListener('click', (e) => {
   const dcol = t.closest('[data-dcol]');
   if (dcol) { delCol = dcol.dataset.dcol; render(); return; }
   if (t.closest('[data-bulk]')) { bulkForm(); return; }
+  if (t.closest('[data-watercompany]')) { waterCompanyList(); return; }
   if (t.closest('[data-addproduct]')) { productForm(); return; }
   if (t.closest('[data-addmosque]')) { mosqueForm(null); return; }
   const ff = t.closest('[data-fbfilter]');
