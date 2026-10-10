@@ -455,7 +455,7 @@ const TABS = [
     match: (o) => o.status === 'cancellationRequested' || one(o.problem_reports)?.state === 'review',
     sub: () => 'Cancellation requests and problem reports' },
   { id: 'refunds', group: 'Customer care', label: 'Refunds', icon: 'refund', ops: true, tone: 'hot',
-    match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet confirmed by the customer' },
+    match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet deposited (MyFatoorah is checked every hour)' },
   { id: 'requests', group: 'Customer care', label: 'Mosque requests', icon: 'pin', ops: true,
     count: () => requests.length, sub: () => 'Mosques customers asked us to add' },
   { id: 'feedback', group: 'Customer care', label: 'Feedback', icon: 'msg', ops: true,
@@ -476,7 +476,7 @@ async function load() {
   const { data, error } = await db.from('orders')
     .select('id, number, status, pay_method, total_fils, placed_at, est_delivery, delivered_at, attempt_at, cancelled_from, ' +
       'customer_id, mosques(en, ar, area, lat, lng, addr, block), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
-      'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference), ' +
+      'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference, mf_refund_status, mf_checked_at, rrn, sent_at), ' +
       'problem_reports(reason, wants_refund, note, photos, at, state)')
     .not('status', 'in', '(paymentPending,paymentFailed)')
     .order('est_delivery').order('placed_at');
@@ -581,9 +581,24 @@ function orderActions(o, inDrawer = false) {
     a.push(btn('Reject report', 'problem', o.id, 'no', 'danger'));
   }
   if (isOps() && r?.stage === 2) a.push(btn(`Send refund ${bhd(r.amount_fils)}`, 'refund', o.id, '', 'accent'));
-  if (isOps() && r?.stage === 3) a.push(btn('Customer confirmed it was deposited', 'received', o.id, '', 'ghost'));
+  // Sent: MyFatoorah's own status moves it to deposited (checked hourly); staff can ask now,
+  // and mark it by hand only if MyFatoorah's portal shows it done but the check can't.
+  if (isOps() && r?.stage === 3) {
+    a.push(btn('Check with MyFatoorah', 'refundcheck', o.id, '', 'accent'));
+    if (inDrawer) a.push(btn('Mark as deposited by hand', 'received', o.id, '', 'ghost'));
+  }
   if (inDrawer && isOps() && ON_THE_WAY.includes(o.status) && !r) a.push(btn('Cancel order and refund', 'staffcancel', o.id, '', 'danger'));
   return a;
+}
+
+// Where MyFatoorah is with a sent refund (checked every hour, or with "Check with MyFatoorah").
+function refundStatusLine(r) {
+  if (!r || r.stage < 3) return '';
+  if (r.mf_refund_status === 'canceled') return '<br><span class="chip bad">MyFatoorah cancelled this refund</span> Check it in the MyFatoorah portal.';
+  const checked = r.mf_checked_at ? ` · checked ${ago(r.mf_checked_at)}` : '';
+  const rrn = r.rrn ? ` · bank ref ${esc(r.rrn)}` : '';
+  if (r.stage === 4) return `<br><span class="sub">Deposited${rrn}</span>`;
+  return `<br><span class="sub">Waiting for MyFatoorah to complete it${checked}. The customer is told automatically.</span>`;
 }
 
 function orderCard(o) {
@@ -610,7 +625,7 @@ function orderCard(o) {
     ${r ? `<div class="box"><b>Refund${r.credit_note_no ? ' ' + esc(r.credit_note_no) : ''}:</b> paid ${bhd(r.paid_fils)}
           ${r.handling_fee_fils + r.processing_fee_fils ? `− fees ${bhd(r.handling_fee_fils + r.processing_fee_fils)}` : '(no deductions)'}
           = <b>${bhd(r.amount_fils)}</b> · ${['', 'requested', 'to send', 'sent', 'deposited'][r.stage]}
-          ${r.mf_refund_reference ? `· ref ${esc(r.mf_refund_reference)}` : ''}</div>` : ''}
+          ${r.mf_refund_reference ? `· ref ${esc(r.mf_refund_reference)}` : ''}${refundStatusLine(r)}</div>` : ''}
     <div class="actions">${a.join('')}</div>
   </article>`;
 }
@@ -775,13 +790,16 @@ function eventText(e) {
     case 'problem_refund_approved': return 'Approved a refund for the problem';
     case 'replacement_approved': return 'Approved a free replacement';
     case 'refund_sent': return 'Refund sent through MyFatoorah' + (d.reference ? ` · ref ${d.reference}` : '');
-    case 'refund_received': return 'Customer confirmed the refund was deposited';
+    case 'refund_received': return e.actor_kind === 'gateway'
+      ? 'Refund deposited: MyFatoorah confirmed it' + (d.rrn ? ` · bank ref ${d.rrn}` : '') + '. The customer was told.'
+      : 'Marked the refund as deposited. The customer was told.';
+    case 'refund_canceled': return 'MyFatoorah cancelled the refund. Check it in the MyFatoorah portal.';
     case 'paid_again': return `Paid again as order SAQI${d.new_order ?? ''}`;
     case 'message_queued': return d.kind === 'payment_reminder' ? 'Sent a payment reminder' : `Wrote to the customer: “${d.body ?? d.body_ar ?? ''}”`;
     default: return String(e.event).replace(/_/g, ' ');
   }
 }
-const eventTone = (e) => ['payment_failed', 'amount_mismatch', 'delivery_failed', 'problem_reported', 'cancellation_requested'].includes(e.event) ? 'bad' : e.actor_kind;
+const eventTone = (e) => ['payment_failed', 'amount_mismatch', 'delivery_failed', 'problem_reported', 'cancellation_requested', 'refund_canceled'].includes(e.event) ? 'bad' : e.actor_kind;
 
 function actorName(e, customer) {
   if (e.actor_kind === 'gateway') return 'MyFatoorah';
@@ -1475,7 +1493,17 @@ async function act(b) {
       const ref = await sendRefund(id);
       if (ref) { toast('Refund sent · ref ' + ref); await load(); }
     }
-    if (act === 'received') await rpc('ops_refund_received', { p_order: id }, 'Refund marked as deposited');
+    if (act === 'received') {
+      if (!confirm('Mark this refund as deposited without MyFatoorah? Only do this if the MyFatoorah portal shows it refunded. The customer will be told.')) return;
+      await rpc('ops_refund_received', { p_order: id }, 'Refund marked as deposited');
+    }
+    if (act === 'refundcheck') {
+      const { data, error } = await db.functions.invoke('refunds-check', { body: { order_id: id } });
+      if (error || data?.failed) return toast('Could not reach MyFatoorah. Try again in a minute.');
+      const st = data?.checked?.[0]?.status;
+      toast({ deposited: 'Deposited. The customer has been told.', refunded: 'Already deposited.', pending: 'MyFatoorah is still processing it.', canceled: 'MyFatoorah cancelled this refund. Check it in their portal.' }[st] ?? 'Checked');
+      await load();
+    }
     if (act === 'request') {
       const { error } = await db.from('mosque_requests').update({ status: arg }).eq('id', id);
       if (error) toast(error.message); else { toast('Saved'); await load(); }
