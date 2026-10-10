@@ -581,7 +581,7 @@ function orderActions(o, inDrawer = false) {
     a.push(btn('Reject report', 'problem', o.id, 'no', 'danger'));
   }
   if (isOps() && r?.stage === 2) a.push(btn(`Send refund ${bhd(r.amount_fils)}`, 'refund', o.id, '', 'accent'));
-  if (isOps() && r?.stage === 3) a.push(btn('Customer confirmed the refund', 'received', o.id, '', 'ghost'));
+  if (isOps() && r?.stage === 3) a.push(btn('Customer confirmed it was deposited', 'received', o.id, '', 'ghost'));
   if (inDrawer && isOps() && ON_THE_WAY.includes(o.status) && !r) a.push(btn('Cancel order and refund', 'staffcancel', o.id, '', 'danger'));
   return a;
 }
@@ -609,7 +609,7 @@ function orderCard(o) {
           · ${esc(p.state)}${p.note ? `<br>“${esc(p.note)}”` : ''}<div class="photos" id="ph-${o.id}"></div></div>` : ''}
     ${r ? `<div class="box"><b>Refund${r.credit_note_no ? ' ' + esc(r.credit_note_no) : ''}:</b> paid ${bhd(r.paid_fils)}
           ${r.handling_fee_fils + r.processing_fee_fils ? `− fees ${bhd(r.handling_fee_fils + r.processing_fee_fils)}` : '(no deductions)'}
-          = <b>${bhd(r.amount_fils)}</b> · ${['', 'requested', 'to send', 'sent', 'received'][r.stage]}
+          = <b>${bhd(r.amount_fils)}</b> · ${['', 'requested', 'to send', 'sent', 'deposited'][r.stage]}
           ${r.mf_refund_reference ? `· ref ${esc(r.mf_refund_reference)}` : ''}</div>` : ''}
     <div class="actions">${a.join('')}</div>
   </article>`;
@@ -775,7 +775,7 @@ function eventText(e) {
     case 'problem_refund_approved': return 'Approved a refund for the problem';
     case 'replacement_approved': return 'Approved a free replacement';
     case 'refund_sent': return 'Refund sent through MyFatoorah' + (d.reference ? ` · ref ${d.reference}` : '');
-    case 'refund_received': return 'Customer confirmed the refund arrived';
+    case 'refund_received': return 'Customer confirmed the refund was deposited';
     case 'paid_again': return `Paid again as order SAQI${d.new_order ?? ''}`;
     case 'message_queued': return d.kind === 'payment_reminder' ? 'Sent a payment reminder' : `Wrote to the customer: “${d.body ?? d.body_ar ?? ''}”`;
     default: return String(e.event).replace(/_/g, ' ');
@@ -1276,7 +1276,7 @@ function pricesForm(id) {
 const NOTE_KIND = {
   order_confirmed: 'Order confirmed', cancellation_accepted: 'Cancellation accepted', cancellation_declined: 'Cancellation declined',
   delivered: 'Delivered', delivery_failed: 'Could not deliver', problem_approved: 'Problem approved', problem_rejected: 'Problem not approved',
-  refund_sent: 'Refund sent', refund_received: 'Refund received', cancelled_by_saqi: 'Order cancelled by Saqi',
+  refund_sent: 'Refund sent', refund_received: 'Refund deposited', cancelled_by_saqi: 'Order cancelled by Saqi',
   out_for_delivery: 'On its way', order_preparing: 'Being prepared',
   payment_reminder: 'Payment reminder', message: 'Message',
 };
@@ -1315,7 +1315,7 @@ async function openOrder(id) {
       ${fact('Delivered', time(x.delivered_at))}
       ${fact('Invoice', esc(x.invoice_no))}
       ${fact('MyFatoorah', [x.mf_invoice_id && `invoice ${esc(x.mf_invoice_id)}`, x.mf_payment_id && `payment ${esc(x.mf_payment_id)}`].filter(Boolean).join('<br>'))}
-      ${r ? fact('Refund', `${bhd(r.amount_fils)} · ${['', 'requested', 'to send', 'sent', 'received'][r.stage]}<br><span class="sub">${REASON[r.reason] ?? esc(r.reason)}${r.credit_note_no ? ' · ' + esc(r.credit_note_no) : ''}${r.mf_refund_reference ? ' · ref ' + esc(r.mf_refund_reference) : ''}</span>`, true) : ''}
+      ${r ? fact('Refund', `${bhd(r.amount_fils)} · ${['', 'requested', 'to send', 'sent', 'deposited'][r.stage]}<br><span class="sub">${REASON[r.reason] ?? esc(r.reason)}${r.credit_note_no ? ' · ' + esc(r.credit_note_no) : ''}${r.mf_refund_reference ? ' · ref ' + esc(r.mf_refund_reference) : ''}</span>`, true) : ''}
       ${p ? fact('Problem', `${REASON[p.reason] ?? esc(p.reason)} · ${esc(p.state)}${p.note ? `<br><span class="sub">“${esc(p.note)}”</span>` : ''}`, true) : ''}
     </div>
     <div class="dsec"><h3>Items</h3><ul class="lines">${(x.order_lines ?? []).map((l) =>
@@ -1475,7 +1475,7 @@ async function act(b) {
       const ref = await sendRefund(id);
       if (ref) { toast('Refund sent · ref ' + ref); await load(); }
     }
-    if (act === 'received') await rpc('ops_refund_received', { p_order: id }, 'Refund marked as received');
+    if (act === 'received') await rpc('ops_refund_received', { p_order: id }, 'Refund marked as deposited');
     if (act === 'request') {
       const { error } = await db.from('mosque_requests').update({ status: arg }).eq('id', id);
       if (error) toast(error.message); else { toast('Saved'); await load(); }
