@@ -1441,6 +1441,14 @@ async function sendRefund(orderId) {
   if (error) {
     let msg = error.message;
     try { const j = await error.context.json(); msg = j.message || j.error || msg; } catch (_) {}
+    // MyFatoorah pays refunds from the balance it holds for Saqi (payments not yet paid out).
+    if (/insufficient balance/i.test(msg)) {
+      ask({ title: 'Not enough balance at MyFatoorah', ok: 'OK', body: `
+        <div class="box">MyFatoorah refused this refund: Saqi's MyFatoorah account doesn't hold enough money right now to pay it back. Nothing was sent and nothing changed; the refund is still waiting here.</div>
+        <div class="sub" style="margin-top:8px">MyFatoorah pays refunds from the money it's holding for Saqi (payments collected but not yet paid out to the bank). Try again after more payments come in, or ask MyFatoorah to top up the balance or allow refunds from the next settlement.</div>`,
+        submit: async () => {} });
+      return null;
+    }
     toast('Refund not sent: ' + msg);
     return null;
   }
