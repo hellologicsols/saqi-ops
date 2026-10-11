@@ -432,7 +432,7 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], fbFilter = 'all', products = [], mosques = [], mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
+let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], fbFilter = 'all', products = [], mosques = [], waiting = {}, mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
 let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
@@ -1152,10 +1152,18 @@ async function loadMosques() {
     if (data.length < 1000) break;
   }
   mosques = all;
+  // "Tell me when available" requests still open, by mosque. Customers are told automatically
+  // (push notification) when the mosque is set to Deliver again or Restore.
+  const { data: alerts, error } = await db.from('mosque_alerts')
+    .select('mosque_id, created_at, customers(name, phone)').is('notified_at', null).order('created_at', { ascending: false });
+  if (error) { toast(error.message); return; }
+  waiting = {};
+  for (const a of alerts ?? []) (waiting[a.mosque_id] ??= []).push(a);
 }
 
 const MFILTERS = [
   { id: 'changed', label: 'On hold, removed or added', match: (m) => !m.served || !m.active || !m.bundled },
+  { id: 'waiting', label: 'Customers waiting', match: (m) => (waiting[m.id]?.length ?? 0) > 0 },
   { id: 'all', label: 'All mosques', match: (m) => m.active },
   { id: 'hold', label: 'On hold', match: (m) => m.active && !m.served },
   { id: 'removed', label: 'Removed', match: (m) => !m.active },
@@ -1166,11 +1174,13 @@ const MFILTERS = [
 function mosqueRow(m) {
   const chip = !m.active ? '<span class="chip">Removed</span>' : !m.served ? '<span class="chip warn">On hold</span>' : '<span class="chip good">Delivering</span>';
   const a = [];
+  const w = waiting[m.id]?.length ?? 0;
+  if (w) a.push(btn(`${w} waiting`, 'waiting', m.id, '', 'ghost sm'));
   a.push(btn('Edit address', 'address', m.id, '', 'ghost sm'));
   if (m.active) a.push(m.served ? btn('Put on hold', 'mosque', m.id, 'hold', 'ghost sm') : btn('Deliver again', 'mosque', m.id, 'serve', 'accent sm'));
   a.push(m.active ? btn('Remove', 'mosque', m.id, 'remove', 'danger sm') : btn('Restore', 'mosque', m.id, 'restore', 'ghost sm'));
   return `<div class="row" style="cursor:default"><span class="av">${icon('pin')}</span>
-    <span><span class="what">${esc(m.en)}</span> ${chip}${!m.bundled ? ' <span class="chip info">Added</span>' : ''}
+    <span><span class="what">${esc(m.en)}</span> ${chip}${!m.bundled ? ' <span class="chip info">Added</span>' : ''}${(waiting[m.id]?.length ?? 0) ? ` <span class="chip warn">${waiting[m.id].length} waiting</span>` : ''}
       <div class="meta"><span dir="rtl">${esc(m.ar)}</span> · ${esc(m.area)} · ${esc(m.gov)} · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a></div>
       <div class="meta">${addressHtml(m)}</div></span>
     <span class="end"><div class="actions" style="justify-content:flex-end;margin:0">${a.join('')}</div></span></div>`;
@@ -1202,13 +1212,27 @@ function renderMosqueRows() {
 async function setMosque(id, what) {
   const m = mosques.find((x) => x.id === id);
   const next = { hold: [false, true], serve: [true, true], remove: [false, false], restore: [true, true] }[what];
+  const w = waiting[id]?.length ?? 0;
+  const tell = w ? ` ${w} ${w === 1 ? 'customer is' : 'customers are'} waiting and will get a notification that Saqi delivers here now.` : '';
   const msg = { hold: `Put ${m.en} on hold? Customers see “Delivery isn't available yet” and can ask to be told when it is. Orders already placed are not changed.`,
-    remove: `Remove ${m.en}? It disappears from search in the app. Orders already placed are not changed.` }[what];
+    remove: `Remove ${m.en}? It disappears from search in the app. Orders already placed are not changed.`,
+    serve: tell && `Deliver to ${m.en} again?${tell}`, restore: tell && `Restore ${m.en}?${tell}` }[what];
   if (msg && !confirm(msg)) return;
   const { error } = await db.rpc('ops_set_mosque', { p_mosque: id, p_served: next[0], p_active: next[1] });
   if (error) return toast(friendly(error.message));
-  toast({ hold: 'On hold', serve: 'Delivering again', remove: 'Removed', restore: 'Restored' }[what]);
+  toast({ hold: 'On hold', serve: 'Delivering again', remove: 'Removed', restore: 'Restored' }[what] + (w && (what === 'serve' || what === 'restore') ? ` · ${w} told` : ''));
   await load();
+}
+
+// Who asked "Tell me when available" for a mosque. They are told automatically when it is set
+// to Deliver again or Restore.
+function waitingList(id) {
+  const m = mosques.find((x) => x.id === id), list = waiting[id] ?? [];
+  ask({ title: `Waiting for ${m.en}`, ok: 'Close', body: `
+      <div class="sub">${list.length} ${list.length === 1 ? 'customer asked' : 'customers asked'} to be told when Saqi delivers here. ${m.served && m.active ? '' : 'They get a notification automatically when you press Deliver again.'}</div>
+      ${list.map((a) => `<div class="row" style="cursor:default"><span><span class="what">${esc(a.customers?.name || 'Customer')}</span>
+        <div class="meta">${a.customers?.phone ? `<a href="tel:${esc(a.customers.phone)}">${esc(a.customers.phone)}</a> · ` : ''}asked ${time(a.created_at)}</div></span></div>`).join('')}`,
+    submit: async () => {} });
 }
 
 // A map location from a Google Maps link or "26.15, 50.62".
@@ -1525,6 +1549,7 @@ async function act(b) {
     if (act === 'remind') reminderForm(id);
     if (act === 'addmosque') mosqueForm(requests.find((r) => r.id === id));
     if (act === 'mosque') await setMosque(id, arg);
+    if (act === 'waiting') waitingList(id);
     if (act === 'address') addressForm(id);
     if (act === 'product') await setProductActive(id, arg === 'on');
     if (act === 'message') messageForm(id, openId === id ? openLocale : null);
