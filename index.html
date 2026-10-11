@@ -692,26 +692,6 @@ function addressForm(id) {
     } });
 }
 
-// After a delivery: the driver adds the number on the mosque's blue plate (and the road if
-// that is missing), so addresses complete themselves as Saqi delivers. Skipping is fine.
-function buildingForm(orderId, m) {
-  const noRoad = addressGaps(m).includes('road');
-  ask({ title: `Building number at ${m.en}?`, ok: 'Save', body: `
-      <div class="sub">The address has no building number yet. Look for the blue number plate on the mosque. If you can't see it, press Cancel.</div>
-      <label>Building number<input name="building" inputmode="numeric" maxlength="6" placeholder="1031" required></label>
-      ${noRoad ? '<label>Road number (optional)<input name="road" inputmode="numeric" maxlength="5" placeholder="4230"></label>' : ''}
-      <div class="sub">Now: ${esc(fullAddress(m) || 'no address')}</div>`,
-    submit: async (f) => {
-      const building = String(f.get('building') ?? '').trim();
-      const road = String(f.get('road') ?? '').trim();
-      if (!/^\d{1,5}[A-Za-z]?$/.test(building)) return 'The building number is digits, maybe with one letter, like 1031 or 1031A.';
-      if (road && !/^\d{1,5}$/.test(road)) return 'The road number is digits only, like 4230.';
-      const { error } = await db.rpc('driver_add_mosque_building', { p_order: orderId, p_building: building, p_road: road });
-      if (error) return friendly(error.message);
-      toast('Address updated, thank you'); await load();
-    } });
-}
-
 // Everything still to send out, as text for the water company: order, mosque, address, block,
 // map pin and water. Copied to the clipboard, or shown to copy by hand.
 function waterCompanyList() {
@@ -1506,9 +1486,7 @@ async function act(b) {
       const path = `${id}/${Date.now()}.${(file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg')}`;
       const up = await db.storage.from('delivery-photos').upload(path, file, { contentType: file.type || 'image/jpeg' });
       if (up.error) return toast(up.error.message);
-      const o = orders.find((x) => x.id === id);
-      const ok = await rpc('ops_mark_delivered', { p_order: id, p_photo: path }, 'Delivered, photo sent to the customer');
-      if (ok && o?.mosques && addressGaps(o.mosques).includes('building number')) buildingForm(id, o.mosques);
+      await rpc('ops_mark_delivered', { p_order: id, p_photo: path }, 'Delivered, photo sent to the customer');
     }
     if (act === 'cancel') {
       if (arg === 'yes' && !confirm('Accept the cancellation? A credit note is issued and the refund is queued.')) return;
