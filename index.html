@@ -432,7 +432,7 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], fbFilter = 'all', products = [], mosques = [], waiting = {}, mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
+let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], dataRequests = [], fbFilter = 'all', products = [], mosques = [], waiting = {}, mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
 let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
@@ -458,6 +458,9 @@ const TABS = [
     match: (o) => [2, 3].includes(one(o.refunds)?.stage), sub: () => 'To send, and sent but not yet deposited (MyFatoorah is checked every hour)' },
   { id: 'requests', group: 'Customer care', label: 'Mosque requests', icon: 'pin', ops: true,
     count: () => requests.length, sub: () => 'Mosques customers asked us to add' },
+  { id: 'data', group: 'Customer care', label: 'Data requests', icon: 'user', ops: true, tone: 'hot',
+    count: () => dataRequests.filter((d) => !d.sent_at).length || null,
+    sub: () => 'Customers who deleted their account and asked for a copy of their data. Email it within 7 days.' },
   { id: 'feedback', group: 'Customer care', label: 'Feedback', icon: 'msg', ops: true,
     count: () => feedback.filter(isNewFeedback).length || null,
     sub: () => 'What customers like, don’t like and want added. Sent from the app (build 17 and later).' },
@@ -476,24 +479,28 @@ async function load() {
   const { data, error } = await db.from('orders')
     .select('id, number, status, pay_method, total_fils, placed_at, est_delivery, delivered_at, attempt_at, cancelled_from, ' +
       'customer_id, mosques(en, ar, area, lat, lng, addr, block), customers(phone, name), order_lines(product_id, cartons, unit_price_fils), ' +
-      'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference, mf_refund_status, mf_checked_at, rrn, sent_at), ' +
+      'refunds(kind, paid_fils, handling_fee_fils, processing_fee_fils, cancel_fee_fils, amount_fils, stage, credit_note_no, mf_refund_reference, mf_refund_status, mf_checked_at, rrn, sent_at), ' +
       'problem_reports(reason, wants_refund, note, photos, at, state)')
     .not('status', 'in', '(paymentPending,paymentFailed)')
     .order('est_delivery').order('placed_at');
   if (error) return toast(error.message);
   orders = data;
   if (isOps()) {
-    const [r, p, f] = await Promise.all([
+    const [r, p, f, dr] = await Promise.all([
       db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
       db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils)')
         .order('sort'),
       db.from('feedback').select('id, rating, liked, disliked, wish, can_contact, source, app_version, language, created_at, ' +
         'order_id, customers(name, phone), orders(number)').order('created_at', { ascending: false }).limit(500),
+      db.from('data_requests').select('id, email, snapshot, requested_at, sent_at, purge_after')
+        .order('requested_at', { ascending: false }).limit(200),
       loadTower(),
       loadMosques(),
     ]);
     if (f.error) toast(f.error.message);
     feedback = f.data ?? [];
+    if (dr.error) toast(dr.error.message);
+    dataRequests = dr.data ?? [];
     requests = r.data ?? [];
     products = p.data ?? [];
   }
@@ -546,6 +553,7 @@ function render() {
   if (tab === 'products') return renderProducts();
   if (tab === 'mosques') return renderMosques();
   if (tab === 'feedback') return renderFeedback();
+  if (tab === 'data') return renderDataRequests();
   if (tab === 'requests') {
     $('list').innerHTML = requests.length ? `<div class="grid">${requests.map(requestCard).join('')}</div>`
       : '<div class="card empty">No new mosque requests.</div>';
@@ -623,7 +631,7 @@ function orderCard(o) {
     ${p ? `<div class="box"><b>Problem:</b> ${REASON[p.reason] ?? esc(p.reason)} · wants ${p.wants_refund ? 'a refund' : 'a replacement'}
           · ${esc(p.state)}${p.note ? `<br>“${esc(p.note)}”` : ''}<div class="photos" id="ph-${o.id}"></div></div>` : ''}
     ${r ? `<div class="box"><b>Refund${r.credit_note_no ? ' ' + esc(r.credit_note_no) : ''}:</b> paid ${bhd(r.paid_fils)}
-          ${r.handling_fee_fils + r.processing_fee_fils ? `− fees ${bhd(r.handling_fee_fils + r.processing_fee_fils)}` : '(no deductions)'}
+          ${refundFees(r) || '(no deductions)'}
           = <b>${bhd(r.amount_fils)}</b> · ${['', 'requested', 'to send', 'sent', 'deposited'][r.stage]}
           ${r.mf_refund_reference ? `· ref ${esc(r.mf_refund_reference)}` : ''}${refundStatusLine(r)}</div>` : ''}
     <div class="actions">${a.join('')}</div>
@@ -741,6 +749,52 @@ function feedbackCard(f) {
     <div class="sub">${f.source === 'after_delivery' ? 'After a delivery' : 'From Profile'} · ${f.language === 'ar' ? 'Arabic' : 'English'} · app ${esc(f.app_version)}
       ${o ? ` · <span class="num" data-order="${f.order_id}" style="cursor:pointer;color:var(--accent)">#SAQI${o.number}</span>` : ''}</div>
   </article>`;
+}
+
+// Itemised change-of-mind deductions: payment fee, cancellation fee, delivery cancellation fee.
+function refundFees(r) {
+  return [[r.processing_fee_fils, 'payment fee'], [r.cancel_fee_fils, 'cancellation fee'], [r.handling_fee_fils, 'delivery fee']]
+    .filter(([f]) => f > 0).map(([f, label]) => `− ${label} ${bhd(f)}`).join(' ');
+}
+
+// ---------------------------------------------------------------- data requests
+function dataCard(d) {
+  const s = d.snapshot ?? {}, acct = s.account ?? {}, n = (s.orders ?? []).length;
+  const status = d.sent_at
+    ? `<span class="chip good">Sent ${time(d.sent_at)}</span>`
+    : `<span class="chip ${Date.now() - new Date(d.requested_at) > 5 * 864e5 ? 'bad' : 'warn'}">To send</span>`;
+  return `<article class="card ocard">
+    <div class="head"><span>${status}</span><span class="sub">Asked ${time(d.requested_at)}</span></div>
+    <div><a href="mailto:${esc(d.email)}">${esc(d.email)}</a></div>
+    <div class="sub">${esc(acct.name || 'No name')} · ${esc(acct.mobile || '')} · ${n} ${n === 1 ? 'order' : 'orders'}</div>
+    ${d.sent_at ? `<div class="sub">The copy and email address are deleted on ${day(d.purge_after)}.</div>`
+      : `<div class="sub">Download the copy, email it to the customer from saqi@logicsols.com with the file attached, then mark it sent.</div>`}
+    <div class="actions">${d.sent_at ? '' : [
+      btn('Download copy', 'datadl', d.id, '', 'ghost sm'),
+      `<a class="btn ghost sm" style="text-decoration:none" href="mailto:${esc(d.email)}?subject=${encodeURIComponent('Your Saqi data')}&body=${encodeURIComponent(
+        'Hello,\n\nAs you asked when you deleted your Saqi account, attached is a copy of the data we held about you: your details and order history.\n\nThank you for using Saqi.\n')}">Write email</a>`,
+      btn('Mark as sent', 'datasent', d.id, '', 'accent sm'),
+    ].join('')}</div>
+  </article>`;
+}
+
+function renderDataRequests() {
+  const open = dataRequests.filter((d) => !d.sent_at), sent = dataRequests.filter((d) => d.sent_at);
+  $('list').innerHTML = (open.length ? `<div class="grid">${open.map(dataCard).join('')}</div>`
+    : '<div class="card empty">No copies waiting to be sent.</div>') +
+    (sent.length ? `<div class="section"><h2>Sent</h2><span class="sub">kept 30 days, then deleted</span></div>
+      <div class="grid">${sent.map(dataCard).join('')}</div>` : '');
+}
+
+function downloadData(id) {
+  const d = dataRequests.find((x) => x.id === id);
+  if (!d) return;
+  const blob = new Blob([JSON.stringify(d.snapshot, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `saqi-data-${d.requested_at.slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function renderFeedback() {
@@ -885,6 +939,7 @@ function renderOverview() {
         ${todo('card', 'Unpaid after 30 minutes', 'Check them with MyFatoorah', stuck.length, 'overview', 'warn')}
         ${todo('clock', 'Late deliveries', 'Past the estimated day', late.length, 'overview', 'bad')}
         ${todo('pin', 'Mosque requests', 'New requests from customers', requests.length, 'requests', 'warn')}
+        ${todo('user', 'Data requests', 'Copies to email to customers', dataRequests.filter((d) => !d.sent_at).length, 'data', 'warn')}
         ${todo('msg', 'Feedback', 'From customers, last 7 days', feedback.filter(isNewFeedback).length, 'feedback', 'warn')}
       </div>
     </div>
@@ -1550,6 +1605,10 @@ async function act(b) {
     if (act === 'addmosque') mosqueForm(requests.find((r) => r.id === id));
     if (act === 'mosque') await setMosque(id, arg);
     if (act === 'waiting') waitingList(id);
+    if (act === 'datadl') downloadData(id);
+    if (act === 'datasent' && confirm('Have you emailed the copy to this customer? It will be deleted in 30 days.')) {
+      await rpc('ops_data_request_sent', { p_id: id }, 'Marked as sent');
+    }
     if (act === 'address') addressForm(id);
     if (act === 'product') await setProductActive(id, arg === 'on');
     if (act === 'message') messageForm(id, openId === id ? openLocale : null);
@@ -1652,7 +1711,7 @@ async function start(session) {
     // refreshes with them. Bursts (an order and its refund changing together) load once.
     const reload = () => { clearTimeout(reload.h); reload.h = setTimeout(load, 400); };
     channel = db.channel('ops');
-    ['orders', 'refunds', 'problem_reports', 'notifications', 'feedback'].forEach((table) =>
+    ['orders', 'refunds', 'problem_reports', 'notifications', 'feedback', 'data_requests'].forEach((table) =>
       channel.on('postgres_changes', { event: '*', schema: 'public', table }, reload));
     channel.subscribe();
   }
