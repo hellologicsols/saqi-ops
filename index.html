@@ -236,6 +236,10 @@
   .checks { display: flex; gap: 14px; flex-wrap: wrap; }
   .checks label { display: flex; gap: 6px; align-items: center; color: var(--ink); font-size: 14px; }
   .checks input { width: auto; }
+  .av.pick { background: none; cursor: pointer; }
+  .av.pick input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .bulkbar { justify-content: flex-start; align-items: center; }
+  .bulkbar .spacer { flex: 1; }
   .templates { display: flex; gap: 6px; flex-wrap: wrap; }
   .fend { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 18px; }
 
@@ -414,6 +418,11 @@ const RULES = {
   mosque_details_required: 'Fill in the name in English and Arabic, and the area.', bad_governorate: 'Choose a governorate.',
   bad_location: 'That location is not in Bahrain. Check the map link or coordinates.', mosque_not_found: 'That mosque no longer exists.', no_pending_cancellation: 'There is no cancellation request waiting.',
   no_pending_report: 'There is no problem report waiting.', refund_not_sent: 'The refund has not been sent yet.',
+  supplier_price_missing: 'Set the water company price for every product in Products first.',
+  already_sent: 'One of these orders was already sent to the water company. Refresh and try again.',
+  not_waiting: 'One of these orders is no longer waiting to go out. Refresh and try again.',
+  no_orders: 'Tick at least one order.', no_mosques: 'Tick at least one mosque.',
+  bad_whatsapp: 'Enter the WhatsApp number with the country code, like +973 3600 0000.',
 };
 const friendly = (msg) => RULES[String(msg ?? '').split(':')[0].trim()] ?? msg;
 
@@ -432,7 +441,7 @@ function failReason(detail) {
 }
 
 // ---------------------------------------------------------------- state and sections
-let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], dataRequests = [], fbFilter = 'all', products = [], mosques = [], waiting = {}, mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
+let me = null, role = null, myName = '', orders = [], requests = [], feedback = [], dataRequests = [], wc = null, supplierOrders = [], poByOrder = {}, wskip = new Set(), msel = new Set(), mshown = [], fbFilter = 'all', products = [], mosques = [], waiting = {}, mosqueQuery = '', mosqueFilter = 'changed', tab = 'deliveries', delCol = 'todo';
 // Control tower: orders of the last 30 days (all statuses, including unpaid), the latest
 // audit-log events, and staff names for "who did it".
 let recent = [], events = [], staffNames = {}, feedFilter = 'all', query = '', found = null, openId = null, openLocale = null, showFailed = false;
@@ -451,6 +460,9 @@ const TABS = [
   { id: 'deliveries', group: 'Deliveries', label: 'Deliveries', icon: 'truck',
     count: () => orders.filter((o) => ON_THE_WAY.includes(o.status)).length,
     sub: () => 'Paid orders to send out, on the road, and delivered today' },
+  { id: 'water', group: 'Deliveries', label: 'Water company', icon: 'truck', ops: true, tone: 'hot',
+    count: () => waterToSend().length || null,
+    sub: () => 'Send paid orders to the water company on WhatsApp, and keep track of what Saqi owes it' },
   { id: 'decide', group: 'Customer care', label: 'Needs a decision', icon: 'alert', ops: true, tone: 'hot',
     match: (o) => o.status === 'cancellationRequested' || one(o.problem_reports)?.state === 'review',
     sub: () => 'Cancellation requests and problem reports' },
@@ -486,14 +498,18 @@ async function load() {
   if (error) return toast(error.message);
   orders = data;
   if (isOps()) {
-    const [r, p, f, dr] = await Promise.all([
+    const [r, p, f, dr, w, po] = await Promise.all([
       db.from('mosque_requests').select('*').eq('status', 'new').order('created_at'),
-      db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils)')
+      db.from('products').select('id, ml, per_carton, out_of_stock, back_on, active, sort, product_tiers(min_cartons, price_fils), supplier_tiers(min_cartons, price_fils)')
         .order('sort'),
       db.from('feedback').select('id, rating, liked, disliked, wish, can_contact, source, app_version, language, created_at, ' +
         'order_id, customers(name, phone), orders(number)').order('created_at', { ascending: false }).limit(500),
       db.from('data_requests').select('id, email, snapshot, requested_at, sent_at, purge_after')
         .order('requested_at', { ascending: false }).limit(200),
+      db.from('water_company').select('name, whatsapp').maybeSingle(),
+      db.from('supplier_orders').select('id, number, created_at, total_fils, paid_at, supplier_order_lines(order_id, cost_fils, lines, ' +
+        'orders(number, est_delivery, status, mosques(en, ar, area, lat, lng, addr, block)))')
+        .order('number', { ascending: false }).limit(200),
       loadTower(),
       loadMosques(),
     ]);
@@ -501,6 +517,11 @@ async function load() {
     feedback = f.data ?? [];
     if (dr.error) toast(dr.error.message);
     dataRequests = dr.data ?? [];
+    for (const res of [w, po]) if (res.error) toast(res.error.message);
+    wc = w.data ?? null;
+    supplierOrders = po.data ?? [];
+    poByOrder = {};
+    for (const x of supplierOrders) for (const l of x.supplier_order_lines ?? []) poByOrder[l.order_id] = x.number;
     requests = r.data ?? [];
     products = p.data ?? [];
   }
@@ -554,6 +575,7 @@ function render() {
   if (tab === 'mosques') return renderMosques();
   if (tab === 'feedback') return renderFeedback();
   if (tab === 'data') return renderDataRequests();
+  if (tab === 'water') return renderWater();
   if (tab === 'requests') {
     $('list').innerHTML = requests.length ? `<div class="grid">${requests.map(requestCard).join('')}</div>`
       : '<div class="card empty">No new mosque requests.</div>';
@@ -618,7 +640,7 @@ function orderCard(o) {
     a.push(`<button class="btn ghost" type="button" data-order="${o.id}">Details</button>`);
   }
   return `<article class="card ocard">
-    <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>${statusChip(o.status)}</div>
+    <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>${poByOrder[o.id] ? `<span class="chip info">${poNo(poByOrder[o.id])}</span>` : ''}${statusChip(o.status)}</div>
     <div class="mosque">${esc(m.en)} <span class="sub">· ${esc(m.area)}${map}</span></div>
     <div class="sub" dir="rtl" style="text-align:left">${esc(m.ar)}</div>
     <div class="sub">${addressHtml(m)}</div>
@@ -700,23 +722,152 @@ function addressForm(id) {
     } });
 }
 
-// Everything still to send out, as text for the water company: order, mosque, address, block,
-// map pin and water. Copied to the clipboard, or shown to copy by hand.
-function waterCompanyList() {
-  const list = orders.filter(DCOLS[0].match)
-    .sort((a, b) => a.est_delivery.localeCompare(b.est_delivery) || String(a.mosques?.area).localeCompare(String(b.mosques?.area)));
-  if (!list.length) return toast('Nothing to send out right now.');
-  const text = list.map((o) => {
-    const m = o.mosques ?? {};
-    const water = (o.order_lines ?? []).map((l) => `${l.cartons} ${l.cartons === 1 ? 'carton' : 'cartons'} of ${PRODUCT[l.product_id] ?? l.product_id}`).join(', ');
-    return [`#SAQI${o.number} · due ${day(o.est_delivery)}`, `${m.en} (${m.ar})`, fullAddress(m) || 'Address not known', m.area, `Map: ${mapUrl(m)}`, `Water: ${water}`].join('\n');
+// ---------------------------------------------------------------- water company
+// The water company delivers to the mosques. Paid orders still to go out are sent to it as a
+// numbered purchase order (PO) on WhatsApp: order numbers, delivery dates, mosque addresses and
+// what Saqi owes for each order at the water company's own price tiers (staff-only).
+const poNo = (n) => 'PO-' + String(n).padStart(4, '0');
+const supplierTiersOf = (p) => [...(p?.supplier_tiers ?? [])].sort((a, b) => a.min_cartons - b.min_cartons);
+const tierTable = (tiers) => `<table class="tiers">${tiers.map((t, i) => {
+  const next = tiers[i + 1];
+  const range = next ? (next.min_cartons - 1 === t.min_cartons ? `${t.min_cartons}` : `${t.min_cartons}–${next.min_cartons - 1}`) : `${t.min_cartons}+`;
+  return `<tr><td>${range} ${range === '1' ? 'carton' : 'cartons'}</td><td>${bhd(t.price_fils)} per carton</td></tr>`;
+}).join('')}</table>`;
+// The water company's price per carton for this many cartons (null: no price set).
+const supplierUnit = (pid, cartons) => {
+  const t = supplierTiersOf(products.find((p) => p.id === pid)).filter((x) => x.min_cartons <= Math.max(cartons, 1)).pop();
+  return t ? t.price_fils : null;
+};
+// What an order will cost Saqi (the server works out the final figure when it is sent).
+const supplierCost = (o) => (o.order_lines ?? []).reduce((n, l) => {
+  const u = supplierUnit(l.product_id, l.cartons);
+  return n === null || u === null ? null : n + u * l.cartons;
+}, 0);
+const waterWaiting = () => orders.filter((o) => DCOLS[0].match(o) && !poByOrder[o.id])
+  .sort((a, b) => a.est_delivery.localeCompare(b.est_delivery) || String(a.mosques?.area).localeCompare(String(b.mosques?.area)));
+const waterToSend = () => waterWaiting().filter((o) => !wskip.has(o.id));
+const waLink = (text) => `https://wa.me/${wc.whatsapp}?text=${encodeURIComponent(text)}`;
+const cartonsWord = (n) => `${n} ${n === 1 ? 'carton' : 'cartons'}`;
+
+function waterMessage(po) {
+  const lines = [...(po?.supplier_order_lines ?? [])]
+    .sort((a, b) => String(a.orders?.est_delivery).localeCompare(String(b.orders?.est_delivery)) || (a.orders?.number ?? 0) - (b.orders?.number ?? 0));
+  const cartons = lines.reduce((n, x) => n + (x.lines ?? []).reduce((k, l) => k + l.cartons, 0), 0);
+  const head = [
+    `Saqi order ${poNo(po.number)} · ${day(ymd(po.created_at))}`,
+    `${lines.length} ${lines.length === 1 ? 'delivery' : 'deliveries'} · ${cartonsWord(cartons)}`,
+    `Amount to pay: ${bhd(po.total_fils)}`,
+  ].join('\n');
+  const body = lines.map((x, i) => {
+    const o = x.orders ?? {}, m = o.mosques ?? {};
+    const water = (x.lines ?? []).map((l) => `${cartonsWord(l.cartons)} of ${PRODUCT[l.product_id] ?? l.product_id} at ${bhd(l.unit_fils)} each = ${bhd(l.cartons * l.unit_fils)}`);
+    return [
+      `${i + 1}. #SAQI${o.number} · deliver by ${day(o.est_delivery)}`,
+      `${m.en}${m.ar ? ` (${m.ar})` : ''}`,
+      [fullAddress(m) || 'Address not known', m.area].filter(Boolean).join(' · '),
+      m.lat ? `Map: ${mapUrl(m)}` : '',
+      ...water,
+      water.length > 1 ? `Order total: ${bhd(x.cost_fils)}` : '',
+    ].filter(Boolean).join('\n');
   }).join('\n\n');
-  ask({ title: `Deliveries for the water company (${list.length})`, ok: 'Copy', body: `
-      <div class="sub">Every order still to send out, with the mosque's address, block and map pin.</div>
-      <textarea name="list" rows="14" readonly style="width:100%;font:inherit;font-size:13px">${esc(text)}</textarea>`,
-    submit: async () => {
-      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it into your message to the water company.'); }
-      catch (_) { return 'Copying is blocked here. Select the text and copy it.'; }
+  return `${head}\n\n${body}\n\nPlease send a photo at each mosque when delivered. Thank you.`;
+}
+
+async function copyText(text, done) {
+  try { await navigator.clipboard.writeText(text); toast(done); }
+  catch (_) { toast('Copying is blocked here.'); }
+}
+
+async function sendToWater() {
+  const ids = waterToSend().map((o) => o.id);
+  if (!ids.length) return;
+  const n = ids.length;
+  if (!confirm(`Send ${n} ${n === 1 ? 'order' : 'orders'} to ${wc?.name || 'the water company'}? A purchase order is created and WhatsApp opens with it.`)) return;
+  // Open the WhatsApp tab now, while the click still counts, and point it at the message later.
+  const win = wc?.whatsapp ? window.open('', '_blank') : null;
+  const { data, error } = await db.rpc('ops_send_to_water_company', { p_orders: ids });
+  if (error) { win?.close(); return toast(friendly(error.message)); }
+  wskip.clear();
+  await load();
+  const po = supplierOrders.find((x) => x.id === data.id);
+  const text = po ? waterMessage(po) : '';
+  if (win && po) { win.location.href = waLink(text); toast(`${poNo(data.number)} created. Press Send in WhatsApp.`); }
+  else { win?.close(); await copyText(text, `${poNo(data.number)} created and copied. Add the WhatsApp number to send it directly.`); }
+}
+
+function poRow(po) {
+  const ls = po.supplier_order_lines ?? [];
+  return `<div class="row" style="cursor:default"><span class="av">${icon('truck')}</span>
+    <span><span class="what">${poNo(po.number)}</span> ${po.paid_at ? '<span class="chip good">Paid</span>' : '<span class="chip warn">To pay</span>'}
+      <div class="meta">Sent ${time(po.created_at)} · ${ls.length} ${ls.length === 1 ? 'order' : 'orders'}: ${ls.map((x) => `#SAQI${x.orders?.number ?? ''}`).join(', ')}</div>
+      ${po.paid_at ? `<div class="meta">Paid ${time(po.paid_at)}</div>` : ''}</span>
+    <span class="end"><b>${bhd(po.total_fils)}</b><div class="actions" style="justify-content:flex-end;margin:4px 0 0">
+      ${wc?.whatsapp ? btn('WhatsApp', 'wwa', po.id, '', 'ghost sm') : ''}${btn('Copy', 'wcopy', po.id, '', 'ghost sm')}${po.paid_at ? '' : btn('Mark as paid', 'wpaid', po.id, '', 'accent sm')}</div></span></div>`;
+}
+
+function renderWater() {
+  const all = waterWaiting();
+  wskip = new Set([...wskip].filter((id) => all.some((o) => o.id === id)));
+  const picked = all.filter((o) => !wskip.has(o.id));
+  const costs = picked.map(supplierCost);
+  const missing = costs.includes(null);
+  const total = missing ? 0 : costs.reduce((a, b) => a + b, 0);
+  const owed = supplierOrders.filter((x) => !x.paid_at).reduce((n, x) => n + x.total_fils, 0);
+  const rows = all.map((o) => {
+    const m = o.mosques ?? {}, cost = supplierCost(o);
+    const cartons = (o.order_lines ?? []).reduce((n, l) => n + l.cartons, 0);
+    return `<label class="row wrow" style="cursor:pointer"><span class="av pick"><input type="checkbox" data-wpick value="${o.id}" ${wskip.has(o.id) ? '' : 'checked'} aria-label="Send #SAQI${o.number}"></span>
+      <span><span class="what">#SAQI${o.number} · ${esc(m.en)}</span> ${o.status === 'retrying' ? '<span class="chip warn">Try again</span>' : ''}
+        <div class="meta">${addressHtml(m)} · ${esc(m.area)}</div>
+        <div class="meta">${cartonsWord(cartons)}: ${(o.order_lines ?? []).map((l) => `${l.cartons} of ${PRODUCT[l.product_id] ?? esc(l.product_id)}`).join(', ')}</div></span>
+      <span class="end"><b>${cost === null ? '<span class="chip warn">No price</span>' : bhd(cost)}</b>due ${esc(day(o.est_delivery))}</span></label>`;
+  });
+  $('list').innerHTML = `
+    <div class="card" style="padding:14px 16px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <span><b>${esc(wc?.name ?? 'Water company')}</b> <span class="sub">${wc?.whatsapp ? `WhatsApp +${esc(wc.whatsapp)}` : 'No WhatsApp number yet'}</span></span>
+      <span class="sub">Still to pay: <b>${bhd(owed)}</b></span>
+      <span style="flex:1"></span>
+      ${role === 'admin' ? '<button class="btn ghost sm" type="button" data-wcedit>Edit</button>' : ''}
+    </div>
+    <div class="section"><h2>To send</h2><span class="sub">paid orders not sent to the water company yet</span></div>
+    ${all.length ? `<div class="card list">
+        <label class="row wrow" style="cursor:pointer"><span class="av pick"><input type="checkbox" data-wall ${picked.length === all.length ? 'checked' : ''} aria-label="Select all"></span>
+          <span class="what">Select all (${all.length})</span><span class="end"></span></label>
+        ${rows.join('')}</div>
+      <div class="toolbar bulkbar" style="margin-top:12px">
+        <span class="sub">${picked.length} selected${missing ? ' · <span class="chip warn">Set the water company price in Products</span>' : ` · to pay ${bhd(total)}`}</span>
+        <span class="spacer"></span>
+        <button class="btn accent" type="button" data-act="wsend" data-id="" data-arg="" ${!picked.length || missing ? 'disabled' : ''}>${wc?.whatsapp ? 'Send' : 'Create'} ${picked.length} ${picked.length === 1 ? 'order' : 'orders'}${wc?.whatsapp ? ' on WhatsApp' : ''}</button>
+      </div>` : panel([], 'Nothing to send. Every paid order has gone to the water company.')}
+    <div class="section"><h2>Sent</h2><span class="sub">newest first</span></div>
+    ${panel(supplierOrders.map(poRow), 'No orders sent yet.')}`;
+}
+
+function waterCompanyForm() {
+  ask({ title: 'Water company', ok: 'Save', body: `
+      <label>Name<input name="name" required maxlength="80" value="${esc(wc?.name ?? '')}"></label>
+      <label>WhatsApp number, with country code<input name="wa" inputmode="tel" value="${wc?.whatsapp ? '+' + esc(wc.whatsapp) : ''}" placeholder="+973 3600 0000"></label>
+      <div class="sub">Orders are sent to this number. Only staff see it.</div>`,
+    submit: async (f) => {
+      const { error } = await db.rpc('ops_set_water_company', { p_name: f.get('name'), p_whatsapp: f.get('wa') });
+      if (error) return friendly(error.message);
+      toast('Saved'); await load();
+    } });
+}
+
+function supplierPricesForm(id) {
+  const p = products.find((x) => x.id === id);
+  const tiers = supplierTiersOf(p);
+  ask({ title: `Water company price · ${productName(p)}`, ok: 'Save prices', body: `
+      <div class="sub">What the water company charges Saqi per carton, by the number of cartons in an order. Start at 1 carton; more cartons can only cost the same or less. Customers never see this.</div>
+      <div id="tierRows" style="display:grid;gap:8px">${(tiers.length ? tiers : [{ min_cartons: 1, price_fils: 0 }]).map((t) => tierRow(t.min_cartons, t.price_fils ? (t.price_fils / 1000).toFixed(3) : '')).join('')}</div>
+      <button class="btn ghost sm" type="button" data-addtier>Add a tier</button>`,
+    submit: async (f) => {
+      const mins = f.getAll('min'), prices = f.getAll('price');
+      const t = mins.map((m, i) => ({ min_cartons: Number(m), price_fils: Math.round(Number(prices[i]) * 1000) }));
+      const { error } = await db.rpc('ops_set_supplier_prices', { p_product: id, p_tiers: t });
+      if (error) return friendly(error.message);
+      toast('Water company price saved'); await load();
     } });
 }
 
@@ -837,6 +988,7 @@ function eventText(e) {
     case 'cancellation_requested': return 'Asked to cancel';
     case 'cancellation_accepted': return 'Accepted the cancellation';
     case 'cancellation_declined': return 'Declined the cancellation';
+    case 'sent_to_water_company': return `Sent to the water company (${poNo(d.po)})`;
     case 'staff_cancelled': return 'Cancelled the order with a full refund' + (d.note ? `: “${d.note}”` : '');
     case 'problem_reported': return `Reported a problem: ${(REASON[d.reason] ?? d.reason ?? '').toLowerCase()}` +
       (d.wants_refund === undefined ? '' : d.wants_refund ? ', wants a refund' : ', wants a replacement');
@@ -938,6 +1090,7 @@ function renderOverview() {
         ${todo('refund', 'Refunds to send', toSend.length ? bhd(toSend.reduce((n, o) => n + one(o.refunds).amount_fils, 0)) + ' in total' : 'None waiting', toSend.length, 'refunds', 'warn')}
         ${todo('card', 'Unpaid after 30 minutes', 'Check them with MyFatoorah', stuck.length, 'overview', 'warn')}
         ${todo('clock', 'Late deliveries', 'Past the estimated day', late.length, 'overview', 'bad')}
+        ${todo('truck', 'To send to the water company', 'Paid orders not yet sent', waterToSend().length, 'water', 'warn')}
         ${todo('pin', 'Mosque requests', 'New requests from customers', requests.length, 'requests', 'warn')}
         ${todo('user', 'Data requests', 'Copies to email to customers', dataRequests.filter((d) => !d.sent_at).length, 'data', 'warn')}
         ${todo('msg', 'Feedback', 'From customers, last 7 days', feedback.filter(isNewFeedback).length, 'feedback', 'warn')}
@@ -1047,7 +1200,7 @@ function deliveryCard(o) {
   if (isOps()) a.push(`<button class="btn ghost" type="button" data-order="${o.id}">Details</button>`);
   return `<article class="card dcard">
     <div class="head"><span class="num" data-order="${o.id}">#SAQI${o.number}</span>
-      ${late ? '<span class="chip bad">Late</span>' : ''}${o.status === 'retrying' ? '<span class="chip warn">Try again</span>' : ''}</div>
+      ${poByOrder[o.id] ? `<span class="chip info">${poNo(poByOrder[o.id])}</span>` : ''}${late ? '<span class="chip bad">Late</span>' : ''}${o.status === 'retrying' ? '<span class="chip warn">Try again</span>' : ''}</div>
     <div class="mosque">${esc(m.en)}</div>
     <div class="sub">${addressHtml(m)}</div>
     <div class="sub">${esc(m.area)}${m.lat ? ` · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a>` : ''}</div>
@@ -1084,7 +1237,7 @@ function renderDeliveries() {
       ${rows.length ? rows.join('') : '<div class="empty">Nothing here right now.</div>'}</section>`;
   };
   $('list').innerHTML = `
-    <div class="toolbar"><button class="btn ghost" type="button" data-watercompany>${icon('truck')}List for the water company</button>${isOps() ? `<button class="btn ghost" type="button" data-bulk>${icon('msg')}Message customers</button>` : ''}</div>
+    <div class="toolbar">${isOps() ? `<button class="btn ghost" type="button" data-goto="water">${icon('truck')}Send to the water company</button>` : ''}${isOps() ? `<button class="btn ghost" type="button" data-bulk>${icon('msg')}Message customers</button>` : ''}</div>
     <div class="seg phone-only" role="group" aria-label="Column">${cols.map((c) =>
       `<button type="button" aria-pressed="${c.id === delCol}" data-dcol="${c.id}">${c.label} (${c.list.length})</button>`).join('')}</div>
     <div class="board">${cols.map(col).join('')}</div>`;
@@ -1153,9 +1306,12 @@ function renderProducts() {
         const range = next ? (next.min_cartons - 1 === t.min_cartons ? `${t.min_cartons}` : `${t.min_cartons}–${next.min_cartons - 1}`) : `${t.min_cartons}+`;
         return `<tr><td>${range} ${range === '1' ? 'carton' : 'cartons'}</td><td>${bhd(t.price_fils)} per carton</td></tr>`;
       }).join('')}</table>
+      <div class="sub" style="margin-top:10px;font-weight:600">Water company price (only staff see this)</div>
+      ${supplierTiersOf(p).length ? tierTable(supplierTiersOf(p)) : '<div class="sub"><span class="chip warn">Not set</span> Needed to send orders to the water company.</div>'}
       <div class="actions">
         <button class="btn ${p.out_of_stock ? 'accent' : 'ghost'}" type="button" data-stock="${p.id}">${p.out_of_stock ? 'Back in stock' : 'Mark out of stock'}</button>
         ${role === 'admin' ? `<button class="btn ghost" type="button" data-prices="${p.id}">Edit prices</button>
+          <button class="btn ghost" type="button" data-sprices="${p.id}">Edit water company price</button>
           ${btn('Remove from sale', 'product', p.id, 'off', 'danger')}` : ''}
       </div>
     </article>`;
@@ -1234,7 +1390,7 @@ function mosqueRow(m) {
   a.push(btn('Edit address', 'address', m.id, '', 'ghost sm'));
   if (m.active) a.push(m.served ? btn('Put on hold', 'mosque', m.id, 'hold', 'ghost sm') : btn('Deliver again', 'mosque', m.id, 'serve', 'accent sm'));
   a.push(m.active ? btn('Remove', 'mosque', m.id, 'remove', 'danger sm') : btn('Restore', 'mosque', m.id, 'restore', 'ghost sm'));
-  return `<div class="row" style="cursor:default"><span class="av">${icon('pin')}</span>
+  return `<div class="row" style="cursor:default"><label class="av pick"><input type="checkbox" data-mpick value="${esc(m.id)}" ${msel.has(m.id) ? 'checked' : ''} aria-label="Select ${esc(m.en)}"></label>
     <span><span class="what">${esc(m.en)}</span> ${chip}${!m.bundled ? ' <span class="chip info">Added</span>' : ''}${(waiting[m.id]?.length ?? 0) ? ` <span class="chip warn">${waiting[m.id].length} waiting</span>` : ''}
       <div class="meta"><span dir="rtl">${esc(m.ar)}</span> · ${esc(m.area)} · ${esc(m.gov)} · <a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" rel="noopener">Map</a></div>
       <div class="meta">${addressHtml(m)}</div></span>
@@ -1260,7 +1416,16 @@ function renderMosqueRows() {
   const q = mosqueQuery.trim().toLowerCase();
   let list = mosques.filter(f.match);
   if (q) list = mosques.filter((m) => `${m.en} ${m.ar} ${m.area} ${m.addr ?? ''} ${m.block ?? ''} ${m.id}`.toLowerCase().includes(q));
-  $('mosqueRows').innerHTML = panel(list.slice(0, 100).map(mosqueRow), q ? 'No mosques match.' : 'Nothing here. Every mosque in the directory is being delivered to.')
+  mshown = list.slice(0, 100).map((m) => m.id);
+  const allTicked = mshown.length > 0 && mshown.every((id) => msel.has(id));
+  $('mosqueRows').innerHTML = `<div class="toolbar bulkbar">
+      <label class="checks"><input type="checkbox" data-mall ${allTicked ? 'checked' : ''}> Select all shown (${mshown.length})</label>
+      <span class="spacer"></span>
+      ${msel.size ? `<span class="sub">${msel.size} selected</span>
+        ${btn('Put on hold', 'mbulk', '', 'hold', 'ghost sm')}${btn('Deliver again', 'mbulk', '', 'serve', 'accent sm')}${btn('Remove', 'mbulk', '', 'remove', 'danger sm')}${btn('Restore', 'mbulk', '', 'restore', 'ghost sm')}
+        <button class="btn ghost sm" type="button" data-mclear>Clear</button>`
+        : '<span class="sub">Tick mosques to change several at once.</span>'}
+    </div>` + panel(list.slice(0, 100).map(mosqueRow), q ? 'No mosques match.' : 'Nothing here. Every mosque in the directory is being delivered to.')
     + (list.length > 100 ? `<p class="sub">Showing 100 of ${list.length}. Search to narrow it down.</p>` : '');
 }
 
@@ -1276,6 +1441,24 @@ async function setMosque(id, what) {
   const { error } = await db.rpc('ops_set_mosque', { p_mosque: id, p_served: next[0], p_active: next[1] });
   if (error) return toast(friendly(error.message));
   toast({ hold: 'On hold', serve: 'Delivering again', remove: 'Removed', restore: 'Restored' }[what] + (w && (what === 'serve' || what === 'restore') ? ` · ${w} told` : ''));
+  await load();
+}
+
+// Several mosques at once (the ticked ones). Customers waiting are told when they deliver again.
+async function setMosques(ids, what) {
+  if (!ids.length) return;
+  const next = { hold: [false, true], serve: [true, true], remove: [false, false], restore: [true, true] }[what];
+  const w = ids.reduce((n, id) => n + (waiting[id]?.length ?? 0), 0);
+  const n = ids.length, them = `${n} ${n === 1 ? 'mosque' : 'mosques'}`;
+  const tell = w && (what === 'serve' || what === 'restore') ? ` ${w} waiting ${w === 1 ? 'customer gets' : 'customers get'} a notification.` : '';
+  const msg = { hold: `Put ${them} on hold? Customers see “Delivery isn't available yet” and can ask to be told when it is. Orders already placed are not changed.`,
+    remove: `Remove ${them}? They disappear from search in the app. Orders already placed are not changed.`,
+    serve: `Deliver to ${them} again?${tell}`, restore: `Restore ${them}?${tell}` }[what];
+  if (!confirm(msg)) return;
+  const { error } = await db.rpc('ops_set_mosques', { p_mosques: ids, p_served: next[0], p_active: next[1] });
+  if (error) return toast(friendly(error.message));
+  msel.clear();
+  toast({ hold: 'On hold', serve: 'Delivering again', remove: 'Removed', restore: 'Restored' }[what] + `: ${them}` + (tell ? ` · ${w} told` : ''));
   await load();
 }
 
@@ -1605,6 +1788,14 @@ async function act(b) {
     if (act === 'addmosque') mosqueForm(requests.find((r) => r.id === id));
     if (act === 'mosque') await setMosque(id, arg);
     if (act === 'waiting') waitingList(id);
+    if (act === 'wwa') { const po = supplierOrders.find((x) => x.id === id); if (po && wc?.whatsapp) window.open(waLink(waterMessage(po)), '_blank', 'noopener'); }
+    if (act === 'wsend') await sendToWater();
+    if (act === 'wcopy') await copyText(waterMessage(supplierOrders.find((x) => x.id === id)), 'Copied. Paste it into WhatsApp.');
+    if (act === 'wpaid') {
+      const po = supplierOrders.find((x) => x.id === id);
+      if (confirm(`Mark ${poNo(po.number)} (${bhd(po.total_fils)}) as paid to ${wc?.name || 'the water company'}?`)) await rpc('ops_water_company_paid', { p_po: id }, 'Marked as paid');
+    }
+    if (act === 'mbulk') await setMosques([...msel], arg);
     if (act === 'datadl') downloadData(id);
     if (act === 'datasent' && confirm('Have you emailed the copy to this customer? It will be deleted in 30 days.')) {
       await rpc('ops_data_request_sent', { p_id: id }, 'Marked as sent');
@@ -1639,7 +1830,10 @@ document.addEventListener('click', (e) => {
   const dcol = t.closest('[data-dcol]');
   if (dcol) { delCol = dcol.dataset.dcol; render(); return; }
   if (t.closest('[data-bulk]')) { bulkForm(); return; }
-  if (t.closest('[data-watercompany]')) { waterCompanyList(); return; }
+  if (t.closest('[data-wcedit]')) { waterCompanyForm(); return; }
+  const sp = t.closest('[data-sprices]');
+  if (sp) { supplierPricesForm(sp.dataset.sprices); return; }
+  if (t.closest('[data-mclear]')) { msel.clear(); renderMosqueRows(); return; }
   if (t.closest('[data-addproduct]')) { productForm(); return; }
   if (t.closest('[data-addmosque]')) { mosqueForm(null); return; }
   const ff = t.closest('[data-fbfilter]');
@@ -1664,6 +1858,14 @@ document.addEventListener('click', (e) => {
 // Click on the dark backdrop closes the drawer.
 $('drawer').addEventListener('click', (e) => { if (e.target === $('drawer')) $('drawer').close(); });
 $('drawer').addEventListener('close', () => { openId = null; });
+// Ticks on the Water company and Mosques pages.
+$('list').addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.matches('[data-wpick]')) { if (t.checked) wskip.delete(t.value); else wskip.add(t.value); renderWater(); }
+  if (t.matches('[data-wall]')) { wskip = t.checked ? new Set() : new Set(waterWaiting().map((o) => o.id)); renderWater(); }
+  if (t.matches('[data-mpick]')) { if (t.checked) msel.add(t.value); else msel.delete(t.value); renderMosqueRows(); }
+  if (t.matches('[data-mall]')) { for (const id of mshown) { if (t.checked) msel.add(id); else msel.delete(id); } renderMosqueRows(); }
+});
 
 $('list').addEventListener('submit', (e) => {
   if (e.target.id === 'mosqueSearch') { e.preventDefault(); return; }
@@ -1711,7 +1913,7 @@ async function start(session) {
     // refreshes with them. Bursts (an order and its refund changing together) load once.
     const reload = () => { clearTimeout(reload.h); reload.h = setTimeout(load, 400); };
     channel = db.channel('ops');
-    ['orders', 'refunds', 'problem_reports', 'notifications', 'feedback', 'data_requests'].forEach((table) =>
+    ['orders', 'refunds', 'problem_reports', 'notifications', 'feedback', 'data_requests', 'supplier_orders'].forEach((table) =>
       channel.on('postgres_changes', { event: '*', schema: 'public', table }, reload));
     channel.subscribe();
   }
