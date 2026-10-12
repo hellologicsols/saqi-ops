@@ -725,7 +725,8 @@ function addressForm(id) {
 // ---------------------------------------------------------------- water company
 // The water company delivers to the mosques. Paid orders still to go out are sent to it as a
 // numbered purchase order (PO) on WhatsApp: order numbers, delivery dates, mosque addresses and
-// what Saqi owes for each order at the water company's own price tiers (staff-only).
+// what Saqi owes for each order at the water company's own price tiers (staff-only). Never any
+// customer details: the message names only the mosque.
 const poNo = (n) => 'PO-' + String(n).padStart(4, '0');
 const supplierTiersOf = (p) => [...(p?.supplier_tiers ?? [])].sort((a, b) => a.min_cartons - b.min_cartons);
 const tierTable = (tiers) => `<table class="tiers">${tiers.map((t, i) => {
@@ -770,7 +771,7 @@ function waterMessage(po) {
       water.length > 1 ? `Order total: ${bhd(x.cost_fils)}` : '',
     ].filter(Boolean).join('\n');
   }).join('\n\n');
-  return `${head}\n\n${body}\n\nPlease send a photo at each mosque when delivered. Thank you.`;
+  return `${head}\n\n${body}\n\nPlease send a photo at each mosque when delivered, with the order number.\nFor any clarification, contact Saqi on +973 3225 2210.\nThank you.`;
 }
 
 async function copyText(text, done) {
