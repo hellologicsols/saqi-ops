@@ -1909,6 +1909,7 @@ async function start(session) {
   tab = isOps() ? 'overview' : 'deliveries';
   try { tab = localStorage.getItem('saqi.ops.tab') || tab; } catch (_) {}
   await load();
+  openFromLink();
   if (!channel) {
     // Every audit event comes with a change to one of these tables, so the activity feed
     // refreshes with them. Bursts (an order and its refund changing together) load once.
@@ -1919,6 +1920,14 @@ async function start(session) {
     channel.subscribe();
   }
 }
+// The "Open order" button in the new-order email links here with #order=<id>.
+function openFromLink() {
+  const m = /order=([0-9a-f-]{36})/i.exec(location.hash);
+  if (!m || !me) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  openOrder(m[1]);
+}
+window.addEventListener('hashchange', openFromLink);
 // Keep "5 min ago" and today's numbers current.
 setInterval(() => { if (me && ['overview', 'activity'].includes(tab) && !$('form').open) render(); }, 60e3);
 db.auth.onAuthStateChange((_event, session) => { setTimeout(() => start(session), 0); });
